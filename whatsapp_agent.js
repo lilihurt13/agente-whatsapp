@@ -246,39 +246,62 @@ function generateResponse(to, lower) {
 
 // ==================== SEND IMAGE ====================
 async function sendImage(to, imageUrl) {
+  const token = (META_API_TOKEN || '').trim();
+  console.log(`[sendImage] token presente: ${!!token}, longitud: ${token.length}`);
   try {
-    await axios.post(`https://graph.instagram.com/v18.0/${PHONE_NUMBER_ID}/messages`, {
+    await axios.post(`https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to,
       type: 'image',
       image: { link: imageUrl }
     }, {
-      headers: { 'Authorization': `Bearer ${META_API_TOKEN}` }
+      headers: { 'Authorization': `Bearer ${token}` }
     });
     console.log(`✅ Imagen enviada a ${to}`);
   } catch (e) {
-    console.error('Error enviando imagen:', e.response?.data || e.message);
+    console.error('❌ Error enviando imagen — status:', e.response?.status);
+    console.error('❌ Error enviando imagen — data:', JSON.stringify(e.response?.data, null, 2));
+    console.error('❌ Error enviando imagen — message:', e.message);
   }
 }
 
 // ==================== SEND MESSAGE ====================
 async function sendMsg(to, text) {
+  const token = (META_API_TOKEN || '').trim();
+  console.log(`[sendMsg] token presente: ${!!token}, longitud: ${token.length}`);
   try {
-    await axios.post(`https://graph.instagram.com/v18.0/${PHONE_NUMBER_ID}/messages`, {
+    await axios.post(`https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
-      to, 
+      to,
       type: 'text',
       text: { body: text }
     }, {
-      headers: { 'Authorization': `Bearer ${META_API_TOKEN}` }
+      headers: { 'Authorization': `Bearer ${token}` }
     });
     console.log(`✅ Mensaje enviado a ${to}`);
   } catch (e) {
-    console.error('Error enviando mensaje:', e.response?.data || e.message);
+    console.error('❌ Error enviando mensaje — status:', e.response?.status);
+    console.error('❌ Error enviando mensaje — data:', JSON.stringify(e.response?.data, null, 2));
+    console.error('❌ Error enviando mensaje — message:', e.message);
   }
 }
 
 // ==================== START ====================
-app.listen(PORT, () => console.log(`✅ Agente Lili con imágenes en puerto ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Agente Lili con imágenes en puerto ${PORT}`);
+
+  // Validación y debug de variables de entorno al iniciar
+  if (!META_API_TOKEN) {
+    console.error('❌ ERROR: META_API_TOKEN no está definido. El agente no podrá enviar mensajes.');
+  } else {
+    console.log(`🔑 META_API_TOKEN cargado correctamente (longitud: ${META_API_TOKEN.length} caracteres)`);
+  }
+
+  if (!PHONE_NUMBER_ID) {
+    console.error('❌ ERROR: PHONE_NUMBER_ID no está definido. El agente no podrá enviar mensajes.');
+  } else {
+    console.log(`📱 PHONE_NUMBER_ID cargado correctamente (longitud: ${PHONE_NUMBER_ID.length} caracteres)`);
+  }
+});
 module.exports = app;
