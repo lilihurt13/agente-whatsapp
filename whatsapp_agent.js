@@ -69,17 +69,25 @@ app.get('/', (req, res) => {
 });
 
 app.get('/webhook', (req, res) => {
+  console.log("🔐 Webhook verification request recibido");
   if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === WEBHOOK_VERIFY_TOKEN) {
     res.send(req.query['hub.challenge']);
   } else {
+    console.log("❌ Webhook verification FALLIDA - token incorrecto o modo incorrecto");
     res.sendStatus(403);
   }
 });
 
 app.post('/webhook', async (req, res) => {
+  console.log("🔔 Webhook POST recibido:", JSON.stringify(req.body, null, 2));
   res.sendStatus(200);
   const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-  if (msg) handleMessage(msg.from, msg.text?.body || '');
+  if (!msg) {
+    console.log("⚠️ Webhook recibido pero sin campo messages");
+  } else {
+    console.log("✅ Mensaje detectado de:", msg.from, "Texto:", msg.text?.body);
+    handleMessage(msg.from, msg.text?.body || '');
+  }
 });
 
 // ==================== MAIN HANDLER ====================
