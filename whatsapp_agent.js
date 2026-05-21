@@ -83,30 +83,30 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ==================== MAIN HANDLER ====================
-async function handleMessage(to, text) {
+async function handleMessage(from, text) {
   const lower = text.toLowerCase().trim();
   
-  if (!conversationHistory[to]) {
-    conversationHistory[to] = [];
+  if (!conversationHistory[from]) {
+    conversationHistory[from] = [];
   }
-  conversationHistory[to].push({ role: 'user', text, timestamp: new Date() });
+  conversationHistory[from].push({ role: 'user', text, timestamp: new Date() });
   
-  const response = generateResponse(to, lower);
-  const image = getImageForResponse(to, lower);
+  const response = generateResponse(from, lower);
+  const image = getImageForResponse(from, lower);
   
   // Enviar imagen si corresponde
   if (image) {
-    await sendImage(to, image);
+    await sendImage(from, image);
     await new Promise(r => setTimeout(r, 800)); // pausa para que meta procese
   }
   
   // Enviar mensaje
-  await sendMsg(to, response);
-  conversationHistory[to].push({ role: 'agent', text: response, timestamp: new Date() });
+  await sendMsg(from, response);
+  conversationHistory[from].push({ role: 'agent', text: response, timestamp: new Date() });
 }
 
 // ==================== GET IMAGE (ROTACIÓN ALEATORIA) ====================
-function getImageForResponse(to, lower) {
+function getImageForResponse(from, lower) {
   let images = null;
   
   if (lower.includes('escritorio') && lower.includes('flotante')) {
@@ -130,8 +130,8 @@ function getImageForResponse(to, lower) {
 }
 
 // ==================== GENERATE RESPONSE ====================
-function generateResponse(to, lower) {
-  const history = conversationHistory[to] || [];
+function generateResponse(from, lower) {
+  const history = conversationHistory[from] || [];
   const messageCount = history.length;
 
   // SALUDO INICIAL
