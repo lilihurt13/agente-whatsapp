@@ -79,7 +79,11 @@ app.get('/webhook', (req, res) => {
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-  if (msg) handleMessage(msg.from, msg.text?.body || '');
+  if (msg) {
+    handleMessage(msg.from, msg.text?.body || '').catch(err => {
+      console.error('❌ Error en handleMessage:', err);
+    });
+  }
 });
 
 // ==================== MAIN HANDLER ====================
@@ -281,4 +285,14 @@ async function sendMsg(to, text) {
 
 // ==================== START ====================
 app.listen(PORT, () => console.log(`✅ Agente Lili con imágenes en puerto ${PORT}`));
+
+// ==================== GLOBAL ERROR HANDLERS ====================
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Promise Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception:', err);
+});
+
 module.exports = app;
