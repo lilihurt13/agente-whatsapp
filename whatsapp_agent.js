@@ -9,6 +9,32 @@ const META_API_TOKEN = process.env.META_API_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const WEBHOOK_VERIFY_TOKEN = 'hecho_por_lili_2026';
 
+// ── Global error handlers ────────────────────────────────────────────────────
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error(`[${new Date().toISOString()}] ❌ Unhandled Promise Rejection:`, reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error(`[${new Date().toISOString()}] ❌ Uncaught Exception:`, err);
+  // Give the logger a tick to flush, then exit so Railway can restart the process
+  process.exit(1);
+});
+
+process.on('exit', (code) => {
+  console.log(`[${new Date().toISOString()}] 🛑 Process exiting with code: ${code}`);
+});
+
+process.on('SIGTERM', () => {
+  console.log(`[${new Date().toISOString()}] 📴 SIGTERM received — shutting down gracefully`);
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log(`[${new Date().toISOString()}] 📴 SIGINT received — shutting down gracefully`);
+  process.exit(0);
+});
+
 // Health check
 app.get('/', (req, res) => {
   res.json({ status: '✅ Agente Lili activo' });
@@ -34,23 +60,24 @@ app.get('/webhook', (req, res) => {
 
 // Webhook messages (POST)
 app.post('/webhook', (req, res) => {
-  res.sendStatus(200);
-
   try {
     const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (message) {
       const from = message.from;
       const text = message.text?.body || '';
 
-      console.log(`📨 De ${from}: ${text}`);
+      console.log(`[${new Date().toISOString()}] 📨 De ${from}: ${text}`);
 
       // Respuesta automática
       setTimeout(() => {
         sendMessage(from, '¡Hola! 👋 Soy Lili. Gracias por escribir. En breve me pongo en contacto. 🪵');
       }, 500);
     }
+
+    res.sendStatus(200);
   } catch (error) {
-    console.error('Error:', error.message);
+    console.error(`[${new Date().toISOString()}] ❌ Error en POST /webhook:`, error);
+    res.sendStatus(500);
   }
 });
 
@@ -75,8 +102,20 @@ async function sendMessage(to, text) {
   }
 }
 
-app.listen(PORT, () => {
-  console.log(`🚀 Agente en puerto ${PORT}`);
-});
+try {
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    const addr = server.address();
+    console.log(`[${new Date().toISOString()}] 🚀 Agente en puerto ${PORT} — escuchando en ${addr.address}:${addr.port}`);
+    console.log(`[${new Date().toISOString()}] ✅ Servidor activo y esperando conexiones`);
+  });
+
+  server.on('error', (err) => {
+    console.error(`[${new Date().toISOString()}] ❌ Error al iniciar el servidor:`, err);
+    process.exit(1);
+  });
+} catch (err) {
+  console.error(`[${new Date().toISOString()}] ❌ Excepción al llamar app.listen():`, err);
+  process.exit(1);
+}
 
 module.exports = app;
