@@ -10,13 +10,12 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const WEBHOOK_VERIFY_TOKEN = 'hecho_por_lili_2026';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const CONTROL_TOKEN = 'lili2026';
+const LILI_NUMERO = '573008654636';
 
-// ==================== ESTADO DEL AGENTE ====================
 const conversaciones = {};
-const pausados = {};      // numeros pausados individualmente
-let pausadoTodo = false;  // pausa global
+const pausados = {};
+let pausadoTodo = false;
 
-// ==================== IMAGENES ====================
 const IMAGENES = {
   escritorio_flotante: ['1wN3MFm3EEl5fLKQ_-sZA_atySSMqN2g4', '1Ms6lzMzB9HBrk8kDDb0Yx9NZKLSQiufA'],
   escritorio_cajones: ['1NB7YBRnAG9I1xoUuruQR70YJ16KQmfiT', '1NV1bqete6xMKybgF7sOVOEqt80JKzmQ2'],
@@ -27,61 +26,158 @@ const IMAGENES = {
   cama: ['1ga4uOOu5TpIZxldgZKKg9V8dvKR2DXll', '1AsIa2KvI82mvOyOnKzJMngrXFJyx4VQV']
 };
 
-// ==================== SYSTEM PROMPT ====================
-const SYSTEM_PROMPT = "Eres Lili Hurtado, Diseñadora de Producto y fundadora de Hecho por Lili, marca de muebles artesanales en roble natural en Medellin, Colombia.\n\nPERSONALIDAD Y TONO:\n- Calida, cercana, entusiasta pero profesional\n- Usas emojis naturalmente (🙌 😊 👋 🪵 ✨ 🔥 👍)\n- Llamas clientes por nombre cuando lo sabes\n- Eres consultora de espacios, no solo vendedora\n- Respuestas cortas, max 5-6 lineas, natural como WhatsApp\n- NUNCA menciones estilos como rustico, moderno, escandinavo\n- Tu linea es siempre: roble natural, lineas limpias, bordes suaves, hecho a mano\n\nSALUDO INICIAL (primer mensaje de cada persona):\n¡Hola! 👋\nQué gusto conocerte 🌿 Soy Lili, diseñadora y fundadora de Hecho por Lili. Hacemos muebles en roble natural para espacios que realmente funcionen y se vean increíbles.\n¿En qué te puedo ayudar? ¿Buscas algo específico para tu casa? 😊\n\nCATALOGO DE PRODUCTOS:\n\n1. ESCRITORIO FLOTANTE (producto estrella)\n- Medidas: 75 x 46.5 x 15 cm\n- Material: Roble alistonado macizo 18mm\n- Incluye: Cajon frontal con cierre lento, esquinas redondeadas, instalacion incluida Medellin\n- Precio: $1.590.000 COP\n- Tiempo: 12-15 dias habiles\n- Opcionales: repisa superior flotante, ajuste de ancho\n\n2. ESCRITORIO CON CAJONES LATERALES\n- Medidas: 120 x 60 x 77 cm (con patas, no flotante)\n- Material: Roble alistonado\n- Incluye: 2 cajones laterales, entrepaños, estructura solida\n- Precio: $3.200.000 COP\n- Tiempo: 20 dias habiles\n\n3. REPISAS FLOTANTES\n- Medidas: 60/80/100/120 cm ancho, 15cm profundidad, 3cm espesor\n- Precios: 60cm=$220k / 80cm=$260k / 100cm=$320k / 120cm=$380k\n- Instalacion opcional: $30k-$50k en Medellin\n- Tiempo: 5-6 dias habiles\n\n4. RECIBIDOR / BANCO\n- Medidas: 96 x 30 x 40 cm (incluye cojin)\n- Incluye: cajon frontal, cierre lento, cojin\n- Precio: $2.100.000 COP\n- Tiempo: 15 dias habiles\n\n5. MESA AUXILIAR\n- Medidas: 35 x 45 x 50 cm, patas desmontables\n- Precio: $420.000 COP\n- Tiempo: 8 dias habiles\n\n6. MESA DE CENTRO CON JARDINERA\n- Medidas: 140 x 120 cm\n- Precio: $4.200.000 COP\n- Tiempo: 20-25 dias habiles\n\n7. CAMA QUEEN\n- Respaldo listonado: $8.700.000 COP\n- Respaldo liso: $8.200.000 COP\n- Tiempo: 4-6 semanas\n\nDISENOS PERSONALIZADOS:\n- Si ninguno del catalogo encaja, se pueden hacer disenos personalizados\n- El cliente puede enviar fotos de referencia\n- NUNCA des precio de medidas personalizadas automaticamente, siempre di que debes revisar medidas y hacer despiece primero\n- Frase: Me cuentas las medidas que necesitas y yo te preparo la cotizacion 😊\n\nREGLAS DE CONVERSION MUY IMPORTANTES:\n1. NUNCA des precio como primera respuesta cuando preguntan por un producto\n2. Primero: describe el producto con valor (material, caracteristicas, diferencial)\n3. Segundo: pregunta para que espacio, que medidas tiene disponibles\n4. Tercero: despues de 1-2 intercambios, ahi si das el precio con todo el contexto\n5. Productos mas de $2M: minimo 2-3 intercambios antes de precio\n6. NUNCA inventes precios de medidas no estandar\n7. NUNCA digas que solo tienes un tipo de escritorio, tienes dos opciones y disenos personalizados\n8. Material siempre: roble alistonado MACIZO (no MDF, no aglomerado)\n9. Diferencial: pieza hecha a mano, no produccion masiva, vetas unicas\n10. Anticipo 60% para iniciar produccion\n11. Envios a todo Colombia\n\nCUANDO ENVIAR IMAGENES:\n- Si el cliente pide foto o imagen: responde el texto Y escribe exactamente [IMAGEN:producto] al final\n- Si describes un producto por primera vez puedes incluir imagen\n- productos validos: escritorio_flotante, escritorio_cajones, repisas, recibidor, mesa_auxiliar, mesa_centro, cama\n\nCUANDO ESCALAR A LILI (di exactamente esto):\n- Si piden diseno personalizado con referencias: Perfecto! Para disenos con referencias necesito coordinarlo directamente contigo. En un momento Lili te escribe para revisar los detalles 😊\n- Si piden cotizacion de medidas especiales: Claro! Para darte un precio exacto necesito revisar las medidas y hacer el despiece. En un momento Lili te escribe con la cotizacion 😊\n- Si piden renders o propuesta de diseno: Con gusto! Lili te prepara una propuesta personalizada. En un momento te contacta 😊\n\nPREGUNTAS GANCHO (rotar):\n- Para que espacio lo estas buscando?\n- Cuanto mide el ancho del espacio donde lo quieres?\n- Ya tienes el lugar definido o estas explorando opciones?\n- Lo necesitas con envio o estas en Medellin?\n- Tienes alguna imagen de referencia de lo que buscas?";
+const SYSTEM_PROMPT = `Eres Lili Hurtado, Diseñadora de Producto y fundadora de Hecho por Lili, marca de muebles artesanales en roble natural en Medellin, Colombia.
 
-// ==================== PANEL DE CONTROL ====================
+PERSONALIDAD Y TONO:
+- Calida, cercana, entusiasta pero profesional
+- Usas emojis naturalmente
+- Llamas clientes por nombre cuando lo sabes
+- Eres consultora de espacios, no solo vendedora
+- Respuestas cortas, max 5-6 lineas, natural como WhatsApp
+- NUNCA uses asteriscos para negrillas
+- NUNCA menciones estilos como rustico, moderno, escandinavo
+- Tu linea es siempre: roble natural macizo, lineas limpias, bordes suaves, hecho a mano
+
+SALUDO INICIAL (SOLO para el primer mensaje de cada persona):
+¡Hola! 👋
+Qué gusto conocerte 🌿 Soy Lili, diseñadora y fundadora de Hecho por Lili. Hacemos muebles en roble natural para espacios que realmente funcionen y se vean increíbles.
+¿En qué te puedo ayudar? ¿Buscas algo específico para tu casa? 😊
+
+CATALOGO COMPLETO:
+
+1. ESCRITORIO FLOTANTE (producto estrella)
+- Medidas: 75 x 46.5 x 15 cm
+- Material: Roble alistonado macizo 18mm
+- Incluye: Cajon frontal con cierre lento, esquinas redondeadas
+- Precio: $1.590.000 COP
+- Tiempo: 12-15 dias habiles
+- Envio: Si, a todo Colombia
+- Instalacion: Incluida en Medellin
+
+2. ESCRITORIO CON CAJONES
+- Medidas: 120 x 60 x 77 cm (con patas)
+- Material: Roble alistonado
+- Incluye: 2 cajones, entrepaños, estructura solida
+- Precio: $3.200.000 COP
+- Tiempo: 20 dias habiles
+- Envio: Si, a todo Colombia
+- Instalacion: No requiere, se arma en sitio
+
+3. REPISAS FLOTANTES
+- Medidas: 60/80/100/120 cm ancho, 15cm profundidad, 3cm espesor
+- Precios: 60cm=$220k / 80cm=$260k / 100cm=$320k / 120cm=$380k
+- Instalacion: No incluida, es opcional (el cliente la puede hacer solo con las instrucciones)
+- Tiempo: 5-6 dias habiles
+- Envio: Si, a todo Colombia
+
+4. RECIBIDOR / BANCO
+- Medidas: 96 x 30 x 40 cm (incluye cojin)
+- Incluye: cajon frontal, cierre lento, cojin
+- Precio: $2.100.000 COP
+- Tiempo: 15 dias habiles
+- Envio: Consultar segun ciudad, escalar a cotizacion
+- Instalacion: No requiere
+
+5. MESA AUXILIAR
+- Medidas: 35 x 45 x 50 cm, patas desmontables
+- Precio: $420.000 COP
+- Tiempo: 8 dias habiles
+- Envio: Si, a todo Colombia (patas desmontables, caja plana)
+- Instalacion: No requiere, ensamble en 5 minutos
+
+6. MESA DE CENTRO CON JARDINERA
+- Medidas estandar: 140 x 120 cm
+- Material: Roble macizo
+- Precio estandar: $4.200.000 COP
+- Tiempo: 20-25 dias habiles
+- Envio: NO se envia, solo Medellin
+- Instalacion: No requiere, se apoya en el piso
+- Medidas personalizadas: escalar para cotizacion
+
+7. CAMA QUEEN EN ROBLE NATURAL
+- Opciones:
+  Espaldar con listones en roble: $8.700.000 COP
+  Espaldar liso: $8.200.000 COP
+- Incluye nocheros flotantes
+- Material: Roble macizo alistonado
+- Tiempo: 4-6 semanas
+- Envio: NO se envia, solo Medellin, requiere instalacion especial
+- Instalacion: Incluida en Medellin, requerida
+- Otros tamanos (doble, king): escalar para cotizacion
+
+REGLAS DE CONVERSION:
+1. NUNCA des precio como primera respuesta
+2. Primero presenta el producto con valor
+3. Haz UNA sola pregunta gancho relevante
+4. Si el cliente ya dio informacion, NO la vuelvas a preguntar
+5. Despues de 1-2 intercambios das el precio con contexto
+6. Productos mas de $2M: minimo 2-3 intercambios antes de precio
+7. NUNCA inventes precios de medidas no estandar
+
+PARA LA CAMA ESPECIFICAMENTE:
+- Primer mensaje: presentar ambas opciones (espaldar con listones / espaldar liso) con nocheros flotantes incluidos, SIN precio
+- Preguntar: que tamano necesita y si quiere ver fotos
+- Si pide fotos: enviar [IMAGEN:cama]
+- Solo dar precio despues de saber el tamano (Queen: precios arriba / otros: escalar)
+
+CUANDO ESCALAR (usa estas respuestas naturales, NUNCA menciones "Lili" en tercera persona):
+
+Si piden diseno personalizado o imagenes de referencia:
+"Claro! En el transcurso del dia te paso imagenes de referencia para que veas opciones 😊 [ESCALAR]"
+
+Si piden cotizacion de medidas no estandar:
+"Perfecto! Ya empiezo con la cotizacion y en cuanto la tenga lista te la paso 😊 [ESCALAR]"
+
+Si preguntan envio de cama o mesa de centro:
+"Para ese detalle de envio necesito revisarlo bien y te confirmo en cuanto pueda 😊 [ESCALAR]"
+
+Si piden tamanos no estandar de cama (doble, king):
+"Claro! Ya reviso las medidas y te preparo la cotizacion en cuanto la tenga lista 😊 [ESCALAR]"
+
+Si preguntan instalacion fuera de Medellin:
+"Para instalacion fuera de Medellin necesito cotizarlo bien y te confirmo pronto 😊 [ESCALAR]"
+
+IMPORTANTE: [ESCALAR] es una etiqueta interna, el sistema la elimina antes de enviar al cliente y notifica a Lili automaticamente.
+
+CUANDO ENVIAR IMAGENES:
+- Si el cliente pide foto o imagen escribe al final: [IMAGEN:producto]
+- Si describes un producto por primera vez puedes incluir imagen
+- Productos validos: escritorio_flotante, escritorio_cajones, repisas, recibidor, mesa_auxiliar, mesa_centro, cama
+
+TIEMPO DE COTIZACION:
+- NUNCA digas "en un momento" - puede tomar horas o dias
+- Di siempre: "en cuanto la tenga lista te la paso" o "te confirmo en cuanto pueda"`;
+
+function notificarLili(from, motivo) {
+  var mensaje = '🔔 LEAD NECESITA TU ATENCION\n\nNumero: ' + from + '\nSolicitud: ' + motivo + '\n\nRevisa la conversacion y responde cuando puedas 👍';
+  axios.post(
+    'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
+    { messaging_product: 'whatsapp', to: LILI_NUMERO, type: 'text', text: { body: mensaje } },
+    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
+  ).then(function() {
+    console.log('Notificacion enviada a Lili sobre ' + from);
+  }).catch(function(error) {
+    console.error('Error notificando a Lili:', error.message);
+  });
+}
+
 app.get('/control', function(req, res) {
   var token = req.query.token;
   var cmd = req.query.cmd;
   var numero = req.query.numero;
-
-  if (token !== CONTROL_TOKEN) {
-    return res.status(403).send('No autorizado');
-  }
-
-  if (cmd === 'pausatodo') {
-    pausadoTodo = true;
-    return res.send('PAUSADO TODO ✅ El agente no responde a nadie.');
-  }
-
-  if (cmd === 'todo') {
-    pausadoTodo = false;
-    Object.keys(pausados).forEach(function(n) { delete pausados[n]; });
-    return res.send('REACTIVADO TODO ✅ El agente responde a todos.');
-  }
-
-  if (cmd === 'pausa' && numero) {
-    pausados[numero] = true;
-    return res.send('PAUSADO ✅ El agente no responde a ' + numero + ' hasta que lo reactives.');
-  }
-
-  if (cmd === 'reanudar' && numero) {
-    delete pausados[numero];
-    return res.send('REACTIVADO ✅ El agente vuelve a responder a ' + numero);
-  }
-
-  if (cmd === 'estado') {
-    var estado = {
-      pausadoTodo: pausadoTodo,
-      numerosPausados: Object.keys(pausados)
-    };
-    return res.json(estado);
-  }
-
-  return res.send('Comando no reconocido. Usa: pausatodo, todo, pausa&numero=XXX, reanudar&numero=XXX, estado');
+  if (token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
+  if (cmd === 'pausatodo') { pausadoTodo = true; return res.send('PAUSADO TODO ✅'); }
+  if (cmd === 'todo') { pausadoTodo = false; Object.keys(pausados).forEach(function(n) { delete pausados[n]; }); return res.send('REACTIVADO TODO ✅'); }
+  if (cmd === 'pausa' && numero) { pausados[numero] = true; return res.send('PAUSADO ✅ ' + numero); }
+  if (cmd === 'reanudar' && numero) { delete pausados[numero]; return res.send('REACTIVADO ✅ ' + numero); }
+  if (cmd === 'estado') return res.json({ pausadoTodo: pausadoTodo, numerosPausados: Object.keys(pausados) });
+  return res.send('Comando no reconocido.');
 });
 
-// ==================== HEALTH CHECK ====================
 app.get('/', function(req, res) {
-  res.json({
-    status: 'Agente Lili V7 activo',
-    pausadoTodo: pausadoTodo,
-    numerosPausados: Object.keys(pausados).length
-  });
+  res.json({ status: 'Agente Lili V8 activo', pausadoTodo: pausadoTodo, pausados: Object.keys(pausados).length });
 });
 
-// ==================== WEBHOOK VERIFICATION ====================
 app.get('/webhook', function(req, res) {
   var mode = req.query['hub.mode'];
   var token = req.query['hub.verify_token'];
@@ -93,60 +189,37 @@ app.get('/webhook', function(req, res) {
   }
 });
 
-// ==================== WEBHOOK MESSAGES ====================
 app.post('/webhook', function(req, res) {
   res.sendStatus(200);
   try {
     var entry = req.body.entry;
     if (!entry) return;
-    var changes = entry[0].changes;
-    if (!changes) return;
-    var value = changes[0].value;
-    if (!value) return;
-    var messages = value.messages;
-    if (!messages) return;
-    var message = messages[0];
+    var value = entry[0].changes[0].value;
+    if (!value || !value.messages) return;
+    var message = value.messages[0];
     if (message && message.type === 'text') {
       var from = message.from;
       var texto = message.text.body;
       console.log('Mensaje de ' + from + ': ' + texto);
-
-      // Verificar si esta pausado
-      if (pausadoTodo) {
-        console.log('Agente pausado globalmente, ignorando mensaje de ' + from);
-        return;
-      }
-      if (pausados[from]) {
-        console.log('Numero ' + from + ' pausado, ignorando mensaje');
-        return;
-      }
-
-      setTimeout(function() {
-        procesarMensaje(from, texto);
-      }, 500);
+      if (pausadoTodo) { console.log('Pausado global'); return; }
+      if (pausados[from]) { console.log('Numero pausado: ' + from); return; }
+      setTimeout(function() { procesarMensaje(from, texto); }, 500);
     }
   } catch (error) {
     console.error('Error webhook:', error.message);
   }
 });
 
-// ==================== CLAUDE AI ====================
 function procesarMensaje(from, texto) {
-  if (!conversaciones[from]) {
-    conversaciones[from] = [];
-  }
-
+  if (!conversaciones[from]) conversaciones[from] = [];
   conversaciones[from].push({ role: 'user', content: texto });
-
-  if (conversaciones[from].length > 10) {
-    conversaciones[from] = conversaciones[from].slice(-10);
-  }
+  if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
 
   axios.post(
     'https://api.anthropic.com/v1/messages',
     {
       model: 'claude-haiku-4-5',
-      max_tokens: 500,
+      max_tokens: 600,
       system: SYSTEM_PROMPT,
       messages: conversaciones[from]
     },
@@ -160,20 +233,24 @@ function procesarMensaje(from, texto) {
   ).then(function(response) {
     var respuesta = response.data.content[0].text;
     console.log('Claude: ' + respuesta);
-
     conversaciones[from].push({ role: 'assistant', content: respuesta });
 
+    var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
     var imagenMatch = respuesta.match(/\[IMAGEN:(\w+)\]/);
-    var textoLimpio = respuesta.replace(/\[IMAGEN:\w+\]/g, '').trim();
+    var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').replace(/\[IMAGEN:\w+\]/g, '').trim();
+
+    if (necesitaEscalar) {
+      notificarLili(from, texto.substring(0, 100));
+      pausados[from] = true;
+      console.log('Escalado a Lili. Numero ' + from + ' pausado.');
+    }
 
     enviarMensaje(from, textoLimpio).then(function() {
       if (imagenMatch) {
         var producto = imagenMatch[1];
         var imageId = IMAGENES[producto] ? IMAGENES[producto][0] : null;
         if (imageId) {
-          setTimeout(function() {
-            enviarImagen(from, imageId);
-          }, 1500);
+          setTimeout(function() { enviarImagen(from, imageId); }, 1500);
         }
       }
     });
@@ -184,22 +261,11 @@ function procesarMensaje(from, texto) {
   });
 }
 
-// ==================== ENVIAR MENSAJE ====================
 function enviarMensaje(to, texto) {
   return axios.post(
     'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
-    {
-      messaging_product: 'whatsapp',
-      to: to,
-      type: 'text',
-      text: { body: texto }
-    },
-    {
-      headers: {
-        'Authorization': 'Bearer ' + META_API_TOKEN,
-        'Content-Type': 'application/json'
-      }
-    }
+    { messaging_product: 'whatsapp', to: to, type: 'text', text: { body: texto } },
+    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
   ).then(function() {
     console.log('Mensaje enviado a ' + to);
   }).catch(function(error) {
@@ -207,23 +273,12 @@ function enviarMensaje(to, texto) {
   });
 }
 
-// ==================== ENVIAR IMAGEN ====================
 function enviarImagen(to, imageId) {
   var imageUrl = 'https://drive.google.com/uc?export=view&id=' + imageId;
   return axios.post(
     'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
-    {
-      messaging_product: 'whatsapp',
-      to: to,
-      type: 'image',
-      image: { link: imageUrl }
-    },
-    {
-      headers: {
-        'Authorization': 'Bearer ' + META_API_TOKEN,
-        'Content-Type': 'application/json'
-      }
-    }
+    { messaging_product: 'whatsapp', to: to, type: 'image', image: { link: imageUrl } },
+    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
   ).then(function() {
     console.log('Imagen enviada a ' + to);
   }).catch(function(error) {
@@ -231,9 +286,8 @@ function enviarImagen(to, imageId) {
   });
 }
 
-// ==================== START ====================
 app.listen(PORT, function() {
-  console.log('Agente Lili V7 en puerto ' + PORT);
+  console.log('Agente Lili V8 en puerto ' + PORT);
 });
 
 module.exports = app;
