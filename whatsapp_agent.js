@@ -126,7 +126,7 @@ function detectarProducto(texto) {
 async function enviarMensaje(to, texto) {
   try {
     await axios.post(
-      `https://graph.instagram.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+      `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
       { messaging_product: 'whatsapp', to, type: 'text', text: { body: texto } },
       { headers: { 'Authorization': `Bearer ${META_API_TOKEN}` } }
     );
@@ -140,7 +140,7 @@ async function enviarImagen(to, imageId) {
   try {
     const imageUrl = `https://drive.google.com/uc?export=view&id=${imageId}`;
     await axios.post(
-      `https://graph.instagram.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+      `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
       { messaging_product: 'whatsapp', to, type: 'image', image: { link: imageUrl } },
       { headers: { 'Authorization': `Bearer ${META_API_TOKEN}` } }
     );
