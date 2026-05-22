@@ -66,7 +66,8 @@ CATALOGO COMPLETO:
 3. REPISAS FLOTANTES
 - Medidas: 60/80/100/120 cm ancho, 15cm profundidad, 3cm espesor
 - Precios: 60cm=$220k / 80cm=$260k / 100cm=$320k / 120cm=$380k
-- Instalacion: No incluida, es opcional (el cliente la puede hacer solo con las instrucciones)
+- Instalacion: Incluida en Medellin
+- Envio otras ciudades: Se envia con soportes e instrucciones de instalacion incluidas
 - Tiempo: 5-6 dias habiles
 - Envio: Si, a todo Colombia
 
