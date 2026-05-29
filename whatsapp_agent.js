@@ -16,6 +16,167 @@ const conversaciones = {};
 const pausados = {};
 let pausadoTodo = false;
 
+// ─── SISTEMA DE SEGUIMIENTO ────────────────────────────────────────────────
+// Estados posibles por número:
+// 'esperando_info'      → lead prometió mandar medidas/fotos
+// 'esperando_decision'  → Lili mandó fotos/referencias esperando que el lead decida estilo
+// 'cotizacion_enviada'  → Lili mandó cotización personalizada
+// 'cerrado_venta'       → venta cerrada, sin seguimiento
+// 'cerrado_perdido'     → lead perdido, sin seguimiento
+
+const seguimientos = {};
+// Estructura de cada entrada:
+// seguimientos[numero] = {
+//   estado: 'esperando_info' | 'esperando_decision' | 'cotizacion_enviada' | 'cerrado_venta' | 'cerrado_perdido',
+//   timestamp: Date.now(),   // momento en que se activó el estado
+//   intentos: 0              // cuántos mensajes de seguimiento ya se mandaron
+// }
+
+// Palabras clave para detectar estado por mensajes de Lili (mensajes salientes)
+const KEYWORDS_COTIZACION = ['cotización', 'cotizacion', 'propuesta', 'el valor quedaría', 'el valor quedaria', 'te paso el precio', 'precio quedaría', 'precio quedaria', 'presupuesto', 'valor total', 'anticipo'];
+const KEYWORDS_DECISION = ['te mando fotos', 'te envío fotos', 'te envio fotos', 'mira estas fotos', 'aquí unas referencias', 'aqui unas referencias', 'referencia', 'referencias', 'estas opciones', 'qué estilo', 'que estilo', 'cuál te gusta', 'cual te gusta'];
+
+// Palabras clave para detectar que el lead prometió info
+const KEYWORDS_LEAD_PROMETE = ['mañana', 'manana', 'luego te', 'te paso', 'te envío', 'te envio', 'te mando', 'después', 'despues', 'más tarde', 'mas tarde', 'esta semana', 'hoy te'];
+
+// Tiempos en milisegundos
+const TIEMPO = {
+  esperando_info_1:      48 * 60 * 60 * 1000,   // 48h → primer seguimiento
+  esperando_info_2:      48 * 60 * 60 * 1000,   // 48h más → segundo y último
+  esperando_decision_1:  24 * 60 * 60 * 1000,   // 24h → primer seguimiento
+  esperando_decision_2:  24 * 60 * 60 * 1000,   // 24h más → segundo y último
+  cotizacion_1:           4 * 24 * 60 * 60 * 1000, // 4 días → primer seguimiento
+  cotizacion_2:           7 * 24 * 60 * 60 * 1000, // 7 días más → segundo y último
+};
+
+// Mensajes de seguimiento por estado e intento
+function getMensajeSeguimiento(estado, intento, nombre) {
+  var n = nombre ? nombre : '';
+  var saludo = n ? ('Hola ' + n + '! 😊') : 'Hola! 😊';
+
+  if (estado === 'esperando_info') {
+    if (intento === 1) return saludo + ' Solo quería saber si pudiste tomar las medidas o fotos que necesitabas. Cuando las tengas me avisas y te preparo todo 🌿';
+    if (intento === 2) return saludo + ' Entiendo que el día a día es ocupado 😊 Si en algún momento quieres retomar el proyecto, aquí estamos con gusto. ¡Cualquier cosa me escribes!';
+  }
+  if (estado === 'esperando_decision') {
+    if (intento === 1) return saludo + ' ¿Pudiste ver las fotos que te envié? ¿Alguna opción te gustó más? 🌿';
+    if (intento === 2) return saludo + ' No hay afán 😊 Cuando tengas un momento y quieras retomar, aquí estoy. ¡Con gusto seguimos!';
+  }
+  if (estado === 'cotizacion_enviada') {
+    if (intento === 1) return saludo + ' ¿Tuviste tiempo de revisar la propuesta que te envié? Cualquier duda con gusto te la resuelvo 🌿';
+    if (intento === 2) return saludo + ' Solo paso a saludarte 🌿 Si en algún momento quieres retomar el proyecto, aquí estamos. ¡Será un placer trabajar contigo!';
+  }
+  return null;
+}
+
+// Detectar estado por mensaje saliente de Lili
+function detectarEstadoPorMensajeLili(texto) {
+  var textoLower = texto.toLowerCase();
+  for (var i = 0; i < KEYWORDS_COTIZACION.length; i++) {
+    if (textoLower.indexOf(KEYWORDS_COTIZACION[i]) !== -1) return 'cotizacion_enviada';
+  }
+  for (var j = 0; j < KEYWORDS_DECISION.length; j++) {
+    if (textoLower.indexOf(KEYWORDS_DECISION[j]) !== -1) return 'esperando_decision';
+  }
+  return null;
+}
+
+// Detectar si el lead prometió info
+function leadPrometioInfo(texto) {
+  var textoLower = texto.toLowerCase();
+  for (var i = 0; i < KEYWORDS_LEAD_PROMETE.length; i++) {
+    if (textoLower.indexOf(KEYWORDS_LEAD_PROMETE[i]) !== -1) return true;
+  }
+  return false;
+}
+
+// Activar seguimiento para un número
+function activarSeguimiento(numero, estado) {
+  // No activar si está cerrado
+  if (seguimientos[numero] && 
+      (seguimientos[numero].estado === 'cerrado_venta' || 
+       seguimientos[numero].estado === 'cerrado_perdido')) return;
+
+  seguimientos[numero] = {
+    estado: estado,
+    timestamp: Date.now(),
+    intentos: 0
+  };
+  console.log('Seguimiento activado para ' + numero + ': ' + estado);
+}
+
+// Limpiar seguimiento cuando el lead responde
+function cancelarSeguimiento(numero) {
+  if (seguimientos[numero] && 
+      seguimientos[numero].estado !== 'cerrado_venta' && 
+      seguimientos[numero].estado !== 'cerrado_perdido') {
+    delete seguimientos[numero];
+    console.log('Seguimiento cancelado para ' + numero + ' (respondió)');
+  }
+}
+
+// Obtener nombre del lead desde historial si existe
+function getNombreLead(numero) {
+  if (!conversaciones[numero]) return null;
+  // Busca si en algún momento el lead dijo su nombre (simple heurística)
+  return null; // Por ahora null, el agente ya lo maneja en conversación
+}
+
+// CRON: revisar seguimientos cada hora
+setInterval(function() {
+  var ahora = Date.now();
+  var numeros = Object.keys(seguimientos);
+  
+  for (var i = 0; i < numeros.length; i++) {
+    var numero = numeros[i];
+    var seg = seguimientos[numero];
+    
+    // Saltar cerrados
+    if (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido') continue;
+    // Saltar pausados globalmente
+    if (pausadoTodo) continue;
+    // Saltar si está pausado manualmente (Lili lo está atendiendo)
+    if (pausados[numero]) continue;
+    
+    var transcurrido = ahora - seg.timestamp;
+    var tiempoEspera = null;
+    
+    // Determinar tiempo de espera según estado e intento
+    if (seg.estado === 'esperando_info') {
+      tiempoEspera = seg.intentos === 0 ? TIEMPO.esperando_info_1 : TIEMPO.esperando_info_2;
+    } else if (seg.estado === 'esperando_decision') {
+      tiempoEspera = seg.intentos === 0 ? TIEMPO.esperando_decision_1 : TIEMPO.esperando_decision_2;
+    } else if (seg.estado === 'cotizacion_enviada') {
+      tiempoEspera = seg.intentos === 0 ? TIEMPO.cotizacion_1 : TIEMPO.cotizacion_2;
+    }
+    
+    if (tiempoEspera && transcurrido >= tiempoEspera) {
+      seg.intentos++;
+      
+      if (seg.intentos <= 2) {
+        // Mandar mensaje de seguimiento
+        var nombre = getNombreLead(numero);
+        var mensaje = getMensajeSeguimiento(seg.estado, seg.intentos, nombre);
+        
+        if (mensaje) {
+          // Reactivar número para que el agente pueda responder si contestan
+          delete pausados[numero];
+          
+          enviarMensaje(numero, mensaje);
+          seg.timestamp = Date.now(); // resetear timer para el próximo intento
+          console.log('Seguimiento enviado a ' + numero + ' (intento ' + seg.intentos + ', estado: ' + seg.estado + ')');
+        }
+      } else {
+        // Máximo de intentos alcanzado → cierre silencioso
+        seguimientos[numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: seg.intentos };
+        console.log('Lead cerrado silenciosamente (sin respuesta): ' + numero);
+      }
+    }
+  }
+}, 60 * 60 * 1000); // cada hora
+
+// ─── FIN SISTEMA DE SEGUIMIENTO ───────────────────────────────────────────
+
 const SYSTEM_PROMPT = `Eres Lili Hurtado, Diseñadora de Producto y fundadora de Hecho por Lili, marca de muebles artesanales en roble natural en Medellin, Colombia.
 
 PERSONALIDAD Y TONO:
@@ -160,12 +321,23 @@ app.get('/control', function(req, res) {
   if (cmd === 'todo') { pausadoTodo = false; Object.keys(pausados).forEach(function(n) { delete pausados[n]; }); return res.send('REACTIVADO TODO ✅'); }
   if (cmd === 'pausa' && numero) { pausados[numero] = true; return res.send('PAUSADO ✅ ' + numero); }
   if (cmd === 'reanudar' && numero) { delete pausados[numero]; return res.send('REACTIVADO ✅ ' + numero); }
-  if (cmd === 'estado') return res.json({ pausadoTodo: pausadoTodo, numerosPausados: Object.keys(pausados) });
+  if (cmd === 'estado') return res.json({ pausadoTodo: pausadoTodo, numerosPausados: Object.keys(pausados), seguimientos: seguimientos });
+  // Nuevos comandos de cierre
+  if (cmd === 'cerrado_venta' && numero) {
+    pausados[numero] = true;
+    seguimientos[numero] = { estado: 'cerrado_venta', timestamp: Date.now(), intentos: 0 };
+    return res.send('CERRADO VENTA ✅ ' + numero + ' — sin más seguimiento');
+  }
+  if (cmd === 'cerrado_perdido' && numero) {
+    pausados[numero] = true;
+    seguimientos[numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: 0 };
+    return res.send('CERRADO PERDIDO ✅ ' + numero + ' — sin más seguimiento');
+  }
   return res.send('Comando no reconocido.');
 });
 
 app.get('/', function(req, res) {
-  res.json({ status: 'Agente Lili V9 activo', pausadoTodo: pausadoTodo, pausados: Object.keys(pausados).length });
+  res.json({ status: 'Agente Lili V10 activo', pausadoTodo: pausadoTodo, pausados: Object.keys(pausados).length, seguimientos: Object.keys(seguimientos).length });
 });
 
 app.get('/webhook', function(req, res) {
@@ -185,15 +357,65 @@ app.post('/webhook', function(req, res) {
     var entry = req.body.entry;
     if (!entry) return;
     var value = entry[0].changes[0].value;
-    if (!value || !value.messages) return;
-    var message = value.messages[0];
-    if (message && message.type === 'text') {
-      var from = message.from;
-      var texto = message.text.body;
-      console.log('Mensaje de ' + from + ': ' + texto);
-      if (pausadoTodo) { console.log('Pausado global'); return; }
-      if (pausados[from]) { console.log('Numero pausado: ' + from); return; }
-      setTimeout(function() { procesarMensaje(from, texto); }, 500);
+    if (!value) return;
+
+    // ── Detectar mensajes SALIENTES de Lili (desde WhatsApp Business) ──
+    if (value.statuses) {
+      // Son eventos de estado (enviado, leído), no mensajes — ignorar
+      return;
+    }
+
+    // Mensajes salientes: Meta los envía con contacts pero sin messages cuando son del business
+    // Los mensajes que Lili envía manualmente llegan como tipo 'sent' en algunos webhooks
+    // Lo detectamos por el campo 'messages' con from === PHONE_NUMBER_ID o por campo específico
+    if (value.messages) {
+      var message = value.messages[0];
+      
+      // Detectar si es mensaje saliente (enviado por Lili desde WhatsApp Business)
+      // Meta marca los mensajes salientes con un campo diferente según la versión
+      var esSaliente = false;
+      if (message.from && message.from === PHONE_NUMBER_ID) esSaliente = true;
+      // Algunos webhooks usan este campo para mensajes enviados manualmente
+      if (value.metadata && value.metadata.phone_number_id && message.from === value.metadata.phone_number_id) esSaliente = true;
+
+      if (esSaliente && message.type === 'text') {
+        // Mensaje saliente de Lili — detectar estado para seguimiento
+        // El destinatario sería el lead, lo obtenemos del campo 'to' si existe
+        var leadNumero = message.to || null;
+        if (leadNumero) {
+          var estadoDetectado = detectarEstadoPorMensajeLili(message.text.body);
+          if (estadoDetectado) {
+            activarSeguimiento(leadNumero, estadoDetectado);
+            console.log('Estado detectado por mensaje saliente de Lili a ' + leadNumero + ': ' + estadoDetectado);
+          }
+        }
+        return;
+      }
+
+      // Mensaje ENTRANTE del lead
+      if (message && message.type === 'text') {
+        var from = message.from;
+        var texto = message.text.body;
+        console.log('Mensaje de ' + from + ': ' + texto);
+
+        // Cancelar seguimiento activo si el lead respondió
+        cancelarSeguimiento(from);
+
+        // Detectar si el lead prometió info (para activar seguimiento esperando_info)
+        if (leadPrometioInfo(texto) && !pausados[from]) {
+          // Se activa después de que el agente responda
+          setTimeout(function() {
+            if (!pausados[from]) {
+              activarSeguimiento(from, 'esperando_info');
+            }
+          }, 2000);
+        }
+
+        if (pausadoTodo) { console.log('Pausado global'); return; }
+        if (pausados[from]) { console.log('Numero pausado: ' + from); return; }
+
+        setTimeout(function() { procesarMensaje(from, texto); }, 500);
+      }
     }
   } catch (error) {
     console.error('Error webhook:', error.message);
@@ -255,7 +477,7 @@ function enviarMensaje(to, texto) {
 }
 
 app.listen(PORT, function() {
-  console.log('Agente Lili V9 en puerto ' + PORT);
+  console.log('Agente Lili V10 en puerto ' + PORT);
 });
 
 module.exports = app;
