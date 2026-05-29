@@ -12,9 +12,35 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const CONTROL_TOKEN = 'lili2026';
 const LILI_NUMERO = '573008654636';
 
-const conversaciones = {};
 const pausados = {};
 let pausadoTodo = false;
+
+// ─── HISTORIAL PERSISTENTE EN DISCO ───────────────────────────────────────
+const fs = require('fs');
+const HISTORIAL_PATH = '/tmp/conversaciones.json';
+
+function cargarHistorial() {
+  try {
+    if (fs.existsSync(HISTORIAL_PATH)) {
+      var data = fs.readFileSync(HISTORIAL_PATH, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch(e) {
+    console.error('Error cargando historial:', e.message);
+  }
+  return {};
+}
+
+function guardarHistorial() {
+  try {
+    fs.writeFileSync(HISTORIAL_PATH, JSON.stringify(conversaciones), 'utf8');
+  } catch(e) {
+    console.error('Error guardando historial:', e.message);
+  }
+}
+
+const conversaciones = cargarHistorial();
+// ─── FIN HISTORIAL PERSISTENTE ────────────────────────────────────────────
 
 // ─── SISTEMA DE SEGUIMIENTO ────────────────────────────────────────────────
 // Estados posibles por número:
@@ -380,14 +406,24 @@ app.post('/webhook', function(req, res) {
       if (value.metadata && value.metadata.phone_number_id && message.from === value.metadata.phone_number_id) esSaliente = true;
 
       if (esSaliente && message.type === 'text') {
-        // Mensaje saliente de Lili — detectar estado para seguimiento
-        // El destinatario sería el lead, lo obtenemos del campo 'to' si existe
+        // Mensaje saliente de Lili — pausa automática + detectar estado para seguimiento
         var leadNumero = message.to || null;
         if (leadNumero) {
+          // PAUSA AUTOMÁTICA: Lili tomó el control, agente se hace a un lado
+          pausados[leadNumero] = true;
+          console.log('Lili escribió a ' + leadNumero + ' — número pausado automáticamente');
+
+          // Guardar mensaje de Lili en historial para que el agente tenga contexto después
+          if (!conversaciones[leadNumero]) conversaciones[leadNumero] = [];
+          conversaciones[leadNumero].push({ role: 'assistant', content: message.text.body });
+          if (conversaciones[leadNumero].length > 12) conversaciones[leadNumero] = conversaciones[leadNumero].slice(-12);
+          guardarHistorial();
+
+          // Detectar estado para seguimiento automático
           var estadoDetectado = detectarEstadoPorMensajeLili(message.text.body);
           if (estadoDetectado) {
             activarSeguimiento(leadNumero, estadoDetectado);
-            console.log('Estado detectado por mensaje saliente de Lili a ' + leadNumero + ': ' + estadoDetectado);
+            console.log('Estado seguimiento activado para ' + leadNumero + ': ' + estadoDetectado);
           }
         }
         return;
@@ -427,6 +463,7 @@ function procesarMensaje(from, texto) {
   if (!conversaciones[from]) conversaciones[from] = [];
   conversaciones[from].push({ role: 'user', content: texto });
   if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
+  guardarHistorial();
 
   axios.post(
     'https://api.anthropic.com/v1/messages',
@@ -447,6 +484,7 @@ function procesarMensaje(from, texto) {
     var respuesta = response.data.content[0].text;
     console.log('Claude: ' + respuesta);
     conversaciones[from].push({ role: 'assistant', content: respuesta });
+    guardarHistorial();
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
     var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').trim();
