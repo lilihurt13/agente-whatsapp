@@ -282,18 +282,18 @@ CATALOGO COMPLETO:
   160cm → $420.000
   Más de 160cm → escalar para precio
 - Instalacion: Incluida en Medellin
-- Envio otras ciudades: NO ofrecer — solo Medellin por ahora. Si preguntan de otra ciudad, escalar
+- Envio otras ciudades: NO ofrecer — solo Medellin por ahora. Si preguntan de otra ciudad, escalar INMEDIATAMENTE sin prometer envío ni instalación. Usar: "Para otras ciudades lo reviso bien y te confirmo. Permíteme un momento 😊 [ESCALAR]"
 - Tiempo: 5-6 dias habiles
 - Caracteristicas siempre mencionar: largo personalizable, 15cm profundidad, 3.6cm espesor, herrajes invisibles, esquinas redondeadas, bordes suaves
 
-REGLA ESPECIAL REPISAS — VENTA DE IMPULSO:
+REGLA GLOBAL REPISAS — NUNCA menciones el uso específico (TV, baño, sala, cocina, etc.) en ningún mensaje. Habla siempre de la repisa de forma genérica. Si el lead lo menciona, ignóralo y sigue el flujo normal sin referenciarlo.
 Las repisas son compra de impulso. El precio ya viene filtrado desde el anuncio.
 - Para repisas NO aplica la regla de "nunca precio primero" — el cliente ya lo vio en el anuncio
 
 FLUJO OBLIGATORIO PARA REPISAS — SIGUE ESTE ORDEN SIEMPRE:
 
 PASO 1 — Saludo + ancla en 60cm + pregunta medida:
-Cuando llegue cualquier lead de repisa (sin importar cómo pregunte), responde SIEMPRE con este mensaje EXACTO — no lo cambies, no lo alargues, no agregues nada:
+Cuando llegue cualquier lead de repisa (sin importar cómo pregunte), responde SIEMPRE con este mensaje EXACTO — no lo cambies, no lo alargues, no agregues nada, no importa lo que diga el lead:
 
 "¡Hola! 👋 Soy Lili Hurtado, fundadora de Hecho por Lili 🌿
 
@@ -304,6 +304,7 @@ Nuestra repisa flotante de 60cm es en roble macizo — instalación flotante, 15
 NUNCA menciones el uso específico (TV, baño, sala, etc.) en este primer mensaje.
 NUNCA listes otras medidas en este primer mensaje.
 NUNCA alargues este mensaje con más información.
+NUNCA des la lista completa de precios aunque el lead pida "precio y medidas" o "todas las opciones" — el flujo siempre empieza por la de 60cm.
 
 PASO 2 — Lead confirma la de 60cm → pre-cierre:
 Si el lead dice que sí le sirve la de 60cm, responde:
@@ -464,37 +465,27 @@ app.post('/webhook', function(req, res) {
     var value = entry[0].changes[0].value;
     if (!value) return;
 
-    // ── Detectar mensajes SALIENTES de Lili (desde WhatsApp Business) ──
-    // Ignorar eventos de estado (enviado, leído) pero NO hacer return — puede haber mensajes también
-    if (value.statuses && !value.messages) {
+    // Ignorar eventos de estado (enviado, leído)
+    if (value.statuses) {
       return;
     }
 
-    // Mensajes salientes: Meta los envía con contacts pero sin messages cuando son del business
-    // Los mensajes que Lili envía manualmente llegan como tipo 'sent' en algunos webhooks
-    // Lo detectamos por el campo 'messages' con from === PHONE_NUMBER_ID o por campo específico
     if (value.messages) {
       var message = value.messages[0];
-      
+
       // Detectar si es mensaje saliente (enviado por Lili desde WhatsApp Business)
       var esSaliente = false;
       if (message.from && message.from === PHONE_NUMBER_ID) esSaliente = true;
 
       if (esSaliente && message.type === 'text') {
-        // Mensaje saliente de Lili — pausa automática + detectar estado para seguimiento
         var leadNumero = message.to || null;
         if (leadNumero) {
-          // PAUSA AUTOMÁTICA: Lili tomó el control, agente se hace a un lado
           pausados[leadNumero] = true;
           console.log('Lili escribió a ' + leadNumero + ' — número pausado automáticamente');
-
-          // Guardar mensaje de Lili en historial para que el agente tenga contexto después
           if (!conversaciones[leadNumero]) conversaciones[leadNumero] = [];
           conversaciones[leadNumero].push({ role: 'assistant', content: message.text.body });
           if (conversaciones[leadNumero].length > 12) conversaciones[leadNumero] = conversaciones[leadNumero].slice(-12);
           guardarHistorial();
-
-          // Detectar estado para seguimiento automático
           var estadoDetectado = detectarEstadoPorMensajeLili(message.text.body);
           if (estadoDetectado) {
             activarSeguimiento(leadNumero, estadoDetectado);
@@ -510,12 +501,9 @@ app.post('/webhook', function(req, res) {
         var texto = message.text.body;
         console.log('Mensaje de ' + from + ': ' + texto);
 
-        // Cancelar seguimiento activo si el lead respondió
         cancelarSeguimiento(from);
 
-        // Detectar si el lead prometió info (para activar seguimiento esperando_info)
         if (leadPrometioInfo(texto) && !pausados[from]) {
-          // Se activa después de que el agente responda
           setTimeout(function() {
             if (!pausados[from]) {
               activarSeguimiento(from, 'esperando_info');
