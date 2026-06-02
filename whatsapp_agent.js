@@ -409,10 +409,10 @@ function notificarLili(from, motivo) {
     'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
     { messaging_product: 'whatsapp', to: LILI_NUMERO, type: 'text', text: { body: mensaje } },
     { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
-  ).then(function() {
-    console.log('Notificacion enviada a Lili sobre ' + from);
+  ).then(function(response) {
+    console.log('Notificacion enviada a Lili sobre ' + from + ' — respuesta Meta: ' + JSON.stringify(response.data));
   }).catch(function(error) {
-    console.error('Error notificando Lili:', error.message);
+    console.error('ERROR notificando Lili sobre ' + from + ': ' + (error.response ? JSON.stringify(error.response.data) : error.message));
   });
 }
 
