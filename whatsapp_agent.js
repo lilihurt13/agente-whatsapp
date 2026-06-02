@@ -13,6 +13,7 @@ const CONTROL_TOKEN = 'lili2026';
 const LILI_NUMERO = '573008654636';
 
 const pausados = {};
+const procesando = {}; // evita procesar dos mensajes del mismo número al mismo tiempo
 let pausadoTodo = false;
 
 // ─── HISTORIAL PERSISTENTE EN DISCO ───────────────────────────────────────
@@ -464,8 +465,8 @@ app.post('/webhook', function(req, res) {
     if (!value) return;
 
     // ── Detectar mensajes SALIENTES de Lili (desde WhatsApp Business) ──
-    if (value.statuses) {
-      // Son eventos de estado (enviado, leído), no mensajes — ignorar
+    // Ignorar eventos de estado (enviado, leído) pero NO hacer return — puede haber mensajes también
+    if (value.statuses && !value.messages) {
       return;
     }
 
@@ -527,7 +528,9 @@ app.post('/webhook', function(req, res) {
 
         if (pausadoTodo) { console.log('Pausado global'); return; }
         if (pausados[from]) { console.log('Numero pausado: ' + from); return; }
+        if (procesando[from]) { console.log('Ya procesando mensaje de: ' + from); return; }
 
+        procesando[from] = true;
         setTimeout(function() { procesarMensaje(from, texto); }, 500);
       }
     }
@@ -572,10 +575,12 @@ function procesarMensaje(from, texto) {
       console.log('Escalado. Numero pausado: ' + from);
     }
 
+    delete procesando[from];
     enviarMensaje(from, textoLimpio);
 
   }).catch(function(error) {
     console.error('Error Claude:', error.response ? JSON.stringify(error.response.data) : error.message);
+    delete procesando[from];
     enviarMensaje(from, 'Hola! 🙌 Estoy revisando tu mensaje, en un momento te respondo 😊');
   });
 }
