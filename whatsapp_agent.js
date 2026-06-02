@@ -477,11 +477,8 @@ app.post('/webhook', function(req, res) {
       var message = value.messages[0];
       
       // Detectar si es mensaje saliente (enviado por Lili desde WhatsApp Business)
-      // Meta marca los mensajes salientes con un campo diferente según la versión
       var esSaliente = false;
       if (message.from && message.from === PHONE_NUMBER_ID) esSaliente = true;
-      // Algunos webhooks usan este campo para mensajes enviados manualmente
-      if (value.metadata && value.metadata.phone_number_id && message.from === value.metadata.phone_number_id) esSaliente = true;
 
       if (esSaliente && message.type === 'text') {
         // Mensaje saliente de Lili — pausa automática + detectar estado para seguimiento
