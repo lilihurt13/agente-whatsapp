@@ -425,7 +425,8 @@ app.get('/control', function(req, res) {
   var numero = req.query.numero;
   if (token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
   if (cmd === 'pausatodo') { pausadoTodo = true; return res.send('PAUSADO TODO ✅'); }
-  if (cmd === 'todo') { pausadoTodo = false; Object.keys(pausados).forEach(function(n) { delete pausados[n]; }); return res.send('REACTIVADO TODO ✅'); }
+  if (cmd === 'todo') { pausadoTodo = false; Object.keys(pausados).forEach(function(n) { delete pausados[n]; }); return res.send('REACTIVADO TODO ✅ (incluye números individuales)'); }
+  if (cmd === 'resumir') { pausadoTodo = false; return res.send('PAUSA GLOBAL QUITADA ✅ — números individuales siguen pausados'); }
   if (cmd === 'pausa' && numero) { pausados[numero] = true; return res.send('PAUSADO ✅ ' + numero); }
   if (cmd === 'reanudar' && numero) { delete pausados[numero]; return res.send('REACTIVADO ✅ ' + numero); }
   if (cmd === 'estado') return res.json({ pausadoTodo: pausadoTodo, numerosPausados: Object.keys(pausados), seguimientos: seguimientos });
