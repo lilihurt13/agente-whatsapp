@@ -424,6 +424,8 @@ app.get('/control', function(req, res) {
   var cmd = req.query.cmd;
   var numero = req.query.numero;
   if (token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
+  // Limpiar número: quitar +, espacios y guiones
+  if (numero) numero = numero.replace(/[\+\s\-]/g, '');
   if (cmd === 'pausatodo') { pausadoTodo = true; return res.send('PAUSADO TODO ✅'); }
   if (cmd === 'todo') { pausadoTodo = false; Object.keys(pausados).forEach(function(n) { delete pausados[n]; }); return res.send('REACTIVADO TODO ✅ (incluye números individuales)'); }
   if (cmd === 'resumir') { pausadoTodo = false; return res.send('PAUSA GLOBAL QUITADA ✅ — números individuales siguen pausados'); }
