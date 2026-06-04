@@ -239,6 +239,12 @@ Si alguien te escribe algo que NO tiene que ver con comprar o preguntar por mueb
 "Hola! 😊 Permíteme un momento que te confirmo todo. [ESCALAR]"
 Esto escala a Lili inmediatamente para que ella responda.
 
+REGLA CRÍTICA — CUANDO NO SABES LA RESPUESTA:
+Si alguien pregunta algo que no está en el catálogo ni en las reglas (dónde están ubicados, si tienen tienda, si pueden visitar, horarios, redes sociales, referencias de clientes, etc.), SIEMPRE escala:
+"Permíteme un momento que te confirmo ese detalle 😊 [ESCALAR]"
+NUNCA inventes información.
+NUNCA digas que pueden venir a ver piezas o visitar el taller — no hay tienda ni showroom abierto al público. El trabajo es 100% personalizado y por encargo. Las fotos de los proyectos se envían por WhatsApp.
+
 DETECTAR CONTEXTO ROTO — CONVERSACIÓN INTERMEDIA:
 Si hay historial previo Y el último mensaje del agente fue [ESCALAR] o hablar de cotización/precio personalizado/fotos, Y la respuesta del lead NO tiene coherencia directa con lo que el agente preguntó, significa que hubo una conversación intermedia que el agente no vio.
 En ese caso SIEMPRE escalar con:
@@ -485,6 +491,8 @@ app.post('/webhook', function(req, res) {
         var leadNumero = message.to || null;
         if (leadNumero) {
           pausados[leadNumero] = true;
+          // Asegurar que el número de Lili nunca quede pausado
+          delete pausados[LILI_NUMERO];
           console.log('Lili escribió a ' + leadNumero + ' — número pausado automáticamente');
           if (!conversaciones[leadNumero]) conversaciones[leadNumero] = [];
           conversaciones[leadNumero].push({ role: 'assistant', content: message.text.body });
@@ -561,6 +569,8 @@ function procesarMensaje(from, texto) {
     if (necesitaEscalar) {
       notificarLili(from, texto.substring(0, 100));
       pausados[from] = true;
+      // Asegurar que el número de Lili nunca quede pausado
+      delete pausados[LILI_NUMERO];
       console.log('Escalado. Numero pausado: ' + from);
     }
 
