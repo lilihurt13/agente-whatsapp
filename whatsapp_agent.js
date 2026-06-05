@@ -491,8 +491,6 @@ app.post('/webhook', function(req, res) {
         var leadNumero = message.to || null;
         if (leadNumero) {
           pausados[leadNumero] = true;
-          // Asegurar que el número de Lili nunca quede pausado
-          delete pausados[LILI_NUMERO];
           console.log('Lili escribió a ' + leadNumero + ' — número pausado automáticamente');
           if (!conversaciones[leadNumero]) conversaciones[leadNumero] = [];
           conversaciones[leadNumero].push({ role: 'assistant', content: message.text.body });
@@ -569,13 +567,11 @@ function procesarMensaje(from, texto) {
     if (necesitaEscalar) {
       notificarLili(from, texto.substring(0, 100));
       pausados[from] = true;
-      // Asegurar que el número de Lili nunca quede pausado
-      delete pausados[LILI_NUMERO];
       console.log('Escalado. Numero pausado: ' + from);
     }
 
-    delete procesando[from];
     enviarMensaje(from, textoLimpio);
+    delete procesando[from];
 
   }).catch(function(error) {
     console.error('Error Claude:', error.response ? JSON.stringify(error.response.data) : error.message);
