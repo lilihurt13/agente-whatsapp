@@ -68,6 +68,8 @@ const KEYWORDS_LEAD_PROMETE = ['mañana', 'manana', 'luego te', 'te paso', 'te e
 
 // Tiempos en milisegundos
 const TIEMPO = {
+  saludo_1:              24 * 60 * 60 * 1000,   // 24h → primer seguimiento tras saludo sin respuesta
+  saludo_2:              48 * 60 * 60 * 1000,   // 48h más → segundo y último
   esperando_info_1:      48 * 60 * 60 * 1000,   // 48h → primer seguimiento
   esperando_info_2:      48 * 60 * 60 * 1000,   // 48h más → segundo y último
   esperando_decision_1:  24 * 60 * 60 * 1000,   // 24h → primer seguimiento
@@ -81,6 +83,10 @@ function getMensajeSeguimiento(estado, intento, nombre) {
   var n = nombre ? nombre : '';
   var saludo = n ? ('Hola ' + n + '! 😊') : 'Hola! 😊';
 
+  if (estado === 'saludo_sin_respuesta') {
+    if (intento === 1) return saludo + ' ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
+    if (intento === 2) return saludo + ' No hay afán 😊 Si en algún momento quieres retomar, aquí estoy con gusto. ¡Cualquier cosa me escribes!';
+  }
   if (estado === 'esperando_info') {
     if (intento === 1) return saludo + ' Solo quería saber si pudiste tomar las medidas o fotos que necesitabas. Cuando las tengas me avisas y te preparo todo 🌿';
     if (intento === 2) return saludo + ' Entiendo que el día a día es ocupado 😊 Si en algún momento quieres retomar el proyecto, aquí estamos con gusto. ¡Cualquier cosa me escribes!';
@@ -169,7 +175,9 @@ setInterval(function() {
     var tiempoEspera = null;
     
     // Determinar tiempo de espera según estado e intento
-    if (seg.estado === 'esperando_info') {
+    if (seg.estado === 'saludo_sin_respuesta') {
+      tiempoEspera = seg.intentos === 0 ? TIEMPO.saludo_1 : TIEMPO.saludo_2;
+    } else if (seg.estado === 'esperando_info') {
       tiempoEspera = seg.intentos === 0 ? TIEMPO.esperando_info_1 : TIEMPO.esperando_info_2;
     } else if (seg.estado === 'esperando_decision') {
       tiempoEspera = seg.intentos === 0 ? TIEMPO.esperando_decision_1 : TIEMPO.esperando_decision_2;
@@ -568,6 +576,11 @@ function procesarMensaje(from, texto) {
       notificarLili(from, texto.substring(0, 100));
       pausados[from] = true;
       console.log('Escalado. Numero pausado: ' + from);
+    } else {
+      // El agente respondió normal. Si el lead no avanza, reactivar en 24h.
+      if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info')) {
+        activarSeguimiento(from, 'saludo_sin_respuesta');
+      }
     }
 
     enviarMensaje(from, textoLimpio);
