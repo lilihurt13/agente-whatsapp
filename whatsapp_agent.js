@@ -418,10 +418,10 @@ function notificarLili(from, motivo) {
     'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
     { messaging_product: 'whatsapp', to: LILI_NUMERO, type: 'text', text: { body: mensaje } },
     { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
-  ).then(function(response) {
-    console.log('Notificacion enviada a Lili sobre ' + from + ' — respuesta Meta: ' + JSON.stringify(response.data));
+  ).then(function() {
+    console.log('Notificacion enviada a Lili sobre ' + from);
   }).catch(function(error) {
-    console.error('ERROR notificando Lili sobre ' + from + ': ' + (error.response ? JSON.stringify(error.response.data) : error.message));
+    console.error('Error notificando Lili:', error.message);
   });
 }
 
@@ -431,7 +431,7 @@ app.get('/control', function(req, res) {
   var numero = req.query.numero;
   if (token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
   // Limpiar número: quitar +, espacios y guiones
-  if (numero) numero = numero.replace(/[\+\s\-]/g, '');
+  if (numero) numero = numero.replace(/[+\s-]/g, '');
   if (cmd === 'pausatodo') { pausadoTodo = true; return res.send('PAUSADO TODO ✅'); }
   if (cmd === 'todo') { pausadoTodo = false; Object.keys(pausados).forEach(function(n) { delete pausados[n]; }); return res.send('REACTIVADO TODO ✅ (incluye números individuales)'); }
   if (cmd === 'resumir') { pausadoTodo = false; return res.send('PAUSA GLOBAL QUITADA ✅ — números individuales siguen pausados'); }
