@@ -700,12 +700,19 @@ app.get('/panel/chat', function(req, res) {
   html += '.top{background:#3a342e;color:#fff;padding:14px 16px;position:sticky;top:0}';
   html += '.top a{color:#cdbfae;text-decoration:none;font-size:14px}.top .n{font-family:monospace;font-size:16px;font-weight:600;margin-top:2px}';
   html += '.est{font-size:12px;color:#cdbfae;margin-top:2px}';
-  html += '.wrap{padding:16px;padding-bottom:40px}';
+  html += '.wrap{padding:16px;padding-bottom:170px}';
   html += '.msg{max-width:78%;padding:9px 13px;border-radius:12px;margin-bottom:8px;font-size:15px;line-height:1.35;white-space:pre-wrap;word-wrap:break-word}';
   html += '.lead{background:#fff;align-self:flex-start;margin-right:auto}';
   html += '.lili{background:#d9fdd3;margin-left:auto}';
   html += '.row{display:flex}';
   html += '.vacio{color:#888;font-style:italic;padding:20px}';
+  html += '.barra{position:fixed;bottom:0;left:0;right:0;background:#f0ece6;padding:10px;box-shadow:0 -1px 4px rgba(0,0,0,.1)}';
+  html += '.barra textarea{width:100%;box-sizing:border-box;border:1px solid #cdbfae;border-radius:10px;padding:10px;font-size:15px;font-family:inherit;resize:vertical;min-height:44px}';
+  html += '.fila{display:flex;gap:8px;margin-top:8px}';
+  html += '.btn{flex:1;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:600;cursor:pointer}';
+  html += '.btn-enviar{background:#3a342e;color:#fff}';
+  html += '.btn-agente{background:#e8e3db;color:#3a342e}';
+  html += '.aviso{font-size:12px;color:#7a7268;text-align:center;margin-top:6px}';
   html += '</style></head><body>';
   html += '<div class="top"><a href="/panel?token=' + CONTROL_TOKEN + '">← Volver a leads</a>';
   html += '<div class="n">+' + numero + '</div>';
@@ -721,8 +728,56 @@ app.get('/panel/chat', function(req, res) {
     });
   }
 
-  html += '</div></body></html>';
+  html += '</div>';
+
+  // Barra de respuesta
+  var estaPausado = pausados[numero] ? true : false;
+  html += '<div class="barra">';
+  html += '<textarea id="txt" placeholder="Escribe tu respuesta..."></textarea>';
+  html += '<div class="fila">';
+  html += '<button class="btn btn-enviar" onclick="enviar(event)">Enviar</button>';
+  if (estaPausado) {
+    html += '<button class="btn btn-agente" onclick="agente(\'reanudar\')">▶️ Activar agente</button>';
+  } else {
+    html += '<button class="btn btn-agente" onclick="agente(\'pausa\')">⏸️ Pausar agente</button>';
+  }
+  html += '</div>';
+  html += '<div class="aviso">' + (estaPausado ? 'El agente está pausado — tú atiendes este lead' : 'El agente está activo en este lead') + '</div>';
+  html += '</div>';
+
+  html += '<script>';
+  html += 'var NUM="' + numero + '";var TK="' + CONTROL_TOKEN + '";';
+  html += 'function enviar(e){';
+  html += 'var t=document.getElementById("txt").value.trim();if(!t)return;';
+  html += 'var b=e.target;b.disabled=true;b.textContent="Enviando...";';
+  html += 'fetch("/panel/enviar",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK,numero:NUM,texto:t})})';
+  html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){location.reload()}else{alert("Error al enviar");b.disabled=false;b.textContent="Enviar"}})';
+  html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="Enviar"});}';
+  html += 'function agente(cmd){fetch("/control?cmd="+cmd+"&numero="+NUM+"&token="+TK).then(function(){location.reload()});}';
+  html += '</script>';
+
+  html += '</body></html>';
   res.send(html);
+});
+
+// Endpoint para enviar respuesta desde el panel
+app.post('/panel/enviar', function(req, res) {
+  if (req.body.token !== CONTROL_TOKEN) return res.status(403).json({ ok: false });
+  var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
+  var texto = req.body.texto || '';
+  if (!numero || !texto) return res.json({ ok: false });
+
+  // Pausar el lead (Lili toma el control) y guardar el mensaje en el historial
+  pausados[numero] = true;
+  if (!conversaciones[numero]) conversaciones[numero] = [];
+  conversaciones[numero].push({ role: 'assistant', content: texto });
+  if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
+  guardarHistorial();
+  cancelarSeguimiento(numero);
+
+  enviarMensaje(numero, texto);
+  console.log('Respuesta manual desde panel a ' + numero);
+  res.json({ ok: true });
 });
 
 function escapeHtml(texto) {
