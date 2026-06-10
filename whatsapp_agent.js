@@ -328,7 +328,7 @@ PERSONALIDAD Y TONO:
 - SOLO usa expresiones colombianas naturales. NUNCA uses modismos mexicanos ni de otros países. Ejemplos prohibidos: "te late", "órale", "chido", "wey", "padrísimo", "ahorita" (en sentido mexicano), "mande". En Colombia se dice: "listo", "con gusto", "claro que sí", "dale", "qué bueno"
 - NUNCA uses "bacano" ni expresiones demasiado informales — el tono es cálido pero elegante
 - NUNCA menciones elección de color — todas las piezas son en roble natural, no hay opciones de color
-- NUNCA ofrezcas envío para repisas — por ahora solo se hacen en Medellín con instalación incluida. Si preguntan de otra ciudad, escalar
+- ENVÍO DE REPISAS A OTRAS CIUDADES: SÍ se envía a otras ciudades. NO hay instalación fuera de Medellín, pero la repisa es flotante y va con sus soportes para que el cliente la instale. NUNCA digas que vas a revisar si consigues instalador — no hay instaladores fuera de Medellín. Valores de envío más abajo en la sección de repisas.
 
 SALUDO INICIAL (SOLO primer mensaje de cada persona nueva):
 ¡Hola! 👋 Qué gusto que nos escribas.
@@ -410,7 +410,13 @@ CATALOGO COMPLETO:
 - REGLA CRÍTICA DE PRECIOS: SOLO puedes dar estos 6 precios exactos. Si el lead pide CUALQUIER otra medida (por ejemplo 70cm, 90cm, 110cm, 130cm, o más de 160cm), NUNCA inventes ni calcules un precio. SIEMPRE escala así: "Esa medida la fabricamos con gusto 😊 Permíteme un momento que te confirmo el valor exacto. [ESCALAR]"
 - NUNCA hagas cálculos proporcionales ni estimes precios intermedios. Si la medida no está en la lista de 6, escalas.
 - Instalacion: Incluida en Medellin
-- Envio otras ciudades: NO ofrecer — solo Medellin por ahora. Si preguntan de otra ciudad, escalar INMEDIATAMENTE sin prometer envío ni instalación. Usar: "Para otras ciudades lo reviso bien y te confirmo. Permíteme un momento 😊 [ESCALAR]"
+- Envio otras ciudades: SÍ se envía. La repisa va empacada en cartón protegiendo la madera, con sus soportes incluidos (es flotante, el cliente la instala). NO hay instalación fuera de Medellín — nunca prometas instalador ni digas que vas a revisar si consigues uno.
+- VALORES DE ENVÍO (solo para estas medidas estándar):
+  Repisas de 60cm a 100cm → envío $35.000
+  Repisas de 120cm a 160cm → envío $45.000
+- Estos valores aplican para ciudades con cobertura normal (Bogotá, Cali, Medellín área, Barranquilla, Pereira, Valledupar, Bucaramanga, Cartagena, Manizales, Armenia, Ibagué, y similares).
+- ESCALAR PARA CONFIRMAR ENVÍO solo en zonas de difícil acceso o muy apartadas: San Andrés y Providencia, Leticia, Mitú, Puerto Carreño, Inírida, Quibdó, Bahía Solano, Tumaco, o veredas/zonas rurales lejos de la ciudad. En esos casos usar: "El envío hasta allá lo confirmo con exactitud y te paso el valor 😊 [ESCALAR]"
+- Si el lead pide una medida de repisa NO estándar (no está en los 6 precios) Y es de otra ciudad, escalar para precio del producto Y del envío juntos.
 - Tiempo: 5-6 dias habiles
 - Caracteristicas siempre mencionar: largo personalizable, 15cm profundidad, 3.6cm espesor, herrajes invisibles, esquinas redondeadas, bordes suaves
 
@@ -529,7 +535,11 @@ CUANDO ESCALAR (respuestas naturales, NUNCA en tercera persona):
 - Envio cama o mesa: "Para ese detalle de envio lo reviso bien y te confirmo en cuanto pueda 😊 [ESCALAR]"
 - Tamanos no estandar cama: "Claro! Ya reviso las medidas y te preparo la cotizacion 😊 [ESCALAR]"
 - Contexto desconocido: "Hola! 😊 Permíteme un momento que te confirmo todo. [ESCALAR]"
-- Otra ciudad (Bogotá, Cali, Barranquilla, Pereira, o cualquier ciudad diferente a Medellín): "Para otras ciudades lo reviso bien y te confirmo. Permíteme un momento 😊 [ESCALAR]" — NUNCA menciones envío, instalación ni opciones antes de escalar
+- Otra ciudad — DEPENDE DEL PRODUCTO:
+  • REPISAS: SÍ se envía con los valores ya indicados ($35.000 para 60-100cm, $45.000 para 120-160cm). Responde el valor de envío directamente, sin escalar, salvo zonas de difícil acceso (San Andrés, Leticia, Quibdó, etc.) que sí se escalan. Recuerda: fuera de Medellín no hay instalación, el cliente la instala (es flotante con soportes).
+  • ESCRITORIO FLOTANTE: se envía a todo Colombia, pero fuera de Medellín no se instala. Si preguntan, dilo claro.
+  • MESA AUXILIAR: se envía a todo Colombia (puede ir desarmada, el cliente la arma).
+  • ESCRITORIO CON CAJONES, MESA DE CENTRO, CAMA: solo Medellín. Si son de otra ciudad: "Ese mueble por ahora lo manejamos en Medellín. Permíteme confirmarte si hay alguna opción para tu ciudad 😊 [ESCALAR]"
 
 IMPORTANTE: [ESCALAR] es interno, el sistema lo elimina del mensaje al cliente y notifica a Lili.
 
@@ -699,7 +709,8 @@ app.get('/panel/chat', function(req, res) {
   html += '<title>+' + numero + '</title><style>';
   html += 'body{font-family:-apple-system,sans-serif;background:#e5ddd5;margin:0;padding:0;color:#3a342e}';
   html += '.top{background:#3a342e;color:#fff;padding:14px 16px;position:sticky;top:0}';
-  html += '.top a{color:#cdbfae;text-decoration:none;font-size:14px}.top .n{font-family:monospace;font-size:16px;font-weight:600;margin-top:2px}';
+  html += '.top a{display:inline-block;color:#fff;background:rgba(255,255,255,.15);text-decoration:none;font-size:15px;padding:8px 14px;border-radius:8px;margin-bottom:10px}';
+  html += '.top .n{font-family:monospace;font-size:16px;font-weight:600;margin-top:2px}';
   html += '.est{font-size:12px;color:#cdbfae;margin-top:2px}';
   html += '.wrap{padding:16px;padding-bottom:170px}';
   html += '.msg{max-width:78%;padding:9px 13px;border-radius:12px;margin-bottom:8px;font-size:15px;line-height:1.35;white-space:pre-wrap;word-wrap:break-word}';
@@ -828,6 +839,14 @@ app.post('/webhook', function(req, res) {
         var texto = message.text.body;
         console.log('Mensaje de ' + from + ': ' + texto);
 
+        // GUARDAR SIEMPRE el mensaje del lead en la BD, aunque esté pausado.
+        // Así Lili ve todas las respuestas en el panel para hacer seguimiento.
+        // La pausa solo evita que el AGENTE responda solo — no que se registre el mensaje.
+        if (!conversaciones[from]) conversaciones[from] = [];
+        conversaciones[from].push({ role: 'user', content: texto });
+        if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
+        guardarConversacion(from);
+
         cancelarSeguimiento(from);
 
         if (leadPrometioInfo(texto) && !pausados[from]) {
@@ -836,8 +855,8 @@ app.post('/webhook', function(req, res) {
           }, 2000);
         }
 
-        if (pausadoTodo) { console.log('Pausado global'); return; }
-        if (pausados[from]) { console.log('Numero pausado: ' + from); return; }
+        if (pausadoTodo) { console.log('Pausado global (mensaje guardado, agente no responde)'); return; }
+        if (pausados[from]) { console.log('Numero pausado (mensaje guardado, agente no responde): ' + from); return; }
         if (procesando[from]) { console.log('Ya procesando mensaje de: ' + from); return; }
 
         procesando[from] = true;
@@ -850,10 +869,9 @@ app.post('/webhook', function(req, res) {
 });
 
 function procesarMensaje(from, texto) {
+  // El mensaje del lead ya fue agregado al historial y guardado en el webhook.
+  // Aquí solo generamos la respuesta del agente.
   if (!conversaciones[from]) conversaciones[from] = [];
-  conversaciones[from].push({ role: 'user', content: texto });
-  if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
-  guardarConversacion(from);
 
   axios.post(
     'https://api.anthropic.com/v1/messages',
