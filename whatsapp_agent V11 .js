@@ -11,6 +11,8 @@ const WEBHOOK_VERIFY_TOKEN = 'hecho_por_lili_2026';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const CONTROL_TOKEN = 'lili2026';
 const LILI_NUMERO = '573008654636';
+const TELEGRAM_TOKEN = '8868128825:AAEv_STo16YwsORBZepK2_raWfAhMNMTiiU';
+const TELEGRAM_CHAT_ID = '2056034612';
 
 const pausados = {};
 const procesando = {}; // evita procesar dos mensajes del mismo número al mismo tiempo
@@ -166,6 +168,8 @@ setInterval(function() {
     
     // Saltar cerrados
     if (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido') continue;
+    // Saltar saludo_sin_respuesta — se maneja en la tanda diaria de las 7pm
+    if (seg.estado === 'saludo_sin_respuesta') continue;
     // Saltar pausados globalmente
     if (pausadoTodo) continue;
     // Saltar si está pausado manualmente (Lili lo está atendiendo)
@@ -175,9 +179,8 @@ setInterval(function() {
     var tiempoEspera = null;
     
     // Determinar tiempo de espera según estado e intento
-    if (seg.estado === 'saludo_sin_respuesta') {
-      tiempoEspera = seg.intentos === 0 ? TIEMPO.saludo_1 : TIEMPO.saludo_2;
-    } else if (seg.estado === 'esperando_info') {
+    // NOTA: saludo_sin_respuesta NO se maneja aquí — tiene su propia tanda diaria a las 7pm
+    if (seg.estado === 'esperando_info') {
       tiempoEspera = seg.intentos === 0 ? TIEMPO.esperando_info_1 : TIEMPO.esperando_info_2;
     } else if (seg.estado === 'esperando_decision') {
       tiempoEspera = seg.intentos === 0 ? TIEMPO.esperando_decision_1 : TIEMPO.esperando_decision_2;
@@ -209,6 +212,76 @@ setInterval(function() {
     }
   }
 }, 60 * 60 * 1000); // cada hora
+
+// ─── TANDAS DIARIAS DE REACTIVACIÓN (12PM Y 7PM HORA COLOMBIA) ─────────────
+// Dos veces al día (mediodía y 7pm), revisa los leads que se quedaron en el
+// saludo y les manda reactivación. Dos tandas aseguran que cualquier lead reciba
+// su reactivación dentro de la ventana de 24h sin importar a qué hora saludó.
+// Envío espaciado (5 seg entre cada uno) para no saturar la API de Meta.
+var ultimaTandaReactivacion = null; // guarda "YYYY-MM-DD-H" de la última tanda
+
+function mensajeReactivacion(intento) {
+  if (intento === 1) return 'Hola! 😊 ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
+  return 'Hola! 😊 No hay afán. Si en algún momento quieres retomar, aquí estoy con gusto 🌿';
+}
+
+setInterval(function() {
+  // Hora Colombia = UTC - 5
+  var ahoraUTC = new Date();
+  var horaColombia = (ahoraUTC.getUTCHours() - 5 + 24) % 24;
+  var fechaColombia = new Date(ahoraUTC.getTime() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  // Solo correr a las 12pm (12h) o a las 7pm (19h), una vez por cada franja
+  if (horaColombia !== 12 && horaColombia !== 19) return;
+  var marca = fechaColombia + '-' + horaColombia;
+  if (ultimaTandaReactivacion === marca) return;
+  ultimaTandaReactivacion = marca;
+
+  if (pausadoTodo) { console.log('Tanda reactivación: pausado global, no se envía'); return; }
+
+  // Recolectar leads en saludo_sin_respuesta que NO estén pausados
+  var candidatos = [];
+  var numeros = Object.keys(seguimientos);
+  for (var i = 0; i < numeros.length; i++) {
+    var numero = numeros[i];
+    var seg = seguimientos[numero];
+    if (seg.estado !== 'saludo_sin_respuesta') continue;
+    if (pausados[numero]) continue;
+
+    var ahora = Date.now();
+    var ref = seg.ultimoMensajeLead || seg.timestamp;
+    var horasDesde = (ahora - ref) / (60 * 60 * 1000);
+
+    // Reactivar solo si pasaron al menos 3 horas (no recién escribió) y está dentro de 24h
+    // Meta solo permite mensaje libre dentro de 24h del último mensaje del lead
+    if (horasDesde >= 3 && horasDesde <= 24) {
+      candidatos.push({ numero: numero, seg: seg });
+    } else if (horasDesde > 24) {
+      // Fuera de ventana de 24h — no se puede mandar mensaje libre, cerrar silenciosamente
+      seguimientos[numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: seg.intentos };
+      console.log('Lead fuera de ventana 24h, cerrado: ' + numero);
+    }
+  }
+
+  console.log('Tanda reactivación (' + horaColombia + 'h): ' + candidatos.length + ' leads para reactivar');
+
+  // Enviar espaciado: uno cada 5 segundos para no saturar Meta
+  candidatos.forEach(function(c, idx) {
+    setTimeout(function() {
+      if (pausados[c.numero]) return; // re-chequear por si fue atendido
+      c.seg.intentos++;
+      if (c.seg.intentos <= 2) {
+        enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos));
+        c.seg.timestamp = Date.now();
+        console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
+      } else {
+        seguimientos[c.numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: c.seg.intentos };
+        console.log('Lead cerrado tras 2 reactivaciones: ' + c.numero);
+      }
+    }, idx * 5000); // 5 segundos entre cada envío
+  });
+
+}, 60 * 60 * 1000); // revisa cada hora, pero solo actúa a las 12pm y 7pm
 
 // ─── FIN SISTEMA DE SEGUIMIENTO ───────────────────────────────────────────
 
@@ -438,14 +511,26 @@ TIEMPO: NUNCA digas "en un momento" para cotizaciones — puede tomar horas o di
 
 function notificarLili(from, motivo) {
   var mensaje = '🔔 LEAD NECESITA TU ATENCION\n\nNumero: ' + from + '\nSolicitud: ' + motivo + '\n\nRevisa la conversacion y responde cuando puedas 👍';
+
+  // 1) Notificación por Telegram (canal principal — confiable, sin límites de Meta)
+  axios.post(
+    'https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage',
+    { chat_id: TELEGRAM_CHAT_ID, text: mensaje }
+  ).then(function() {
+    console.log('Notificacion Telegram enviada a Lili sobre ' + from);
+  }).catch(function(error) {
+    console.error('Error notificando Telegram:', error.response ? JSON.stringify(error.response.data) : error.message);
+  });
+
+  // 2) Notificación por WhatsApp (respaldo)
   axios.post(
     'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
     { messaging_product: 'whatsapp', to: LILI_NUMERO, type: 'text', text: { body: mensaje } },
     { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
   ).then(function() {
-    console.log('Notificacion enviada a Lili sobre ' + from);
+    console.log('Notificacion WhatsApp enviada a Lili sobre ' + from);
   }).catch(function(error) {
-    console.error('Error notificando Lili:', error.message);
+    console.error('Error notificando WhatsApp:', error.message);
   });
 }
 
@@ -550,6 +635,102 @@ app.get('/reporte', function(req, res) {
 
   res.send(html);
 });
+
+// ─── PANEL DE CONVERSACIONES (Etapa 1: ver leads y conversaciones) ─────────
+function estadoLegible(numero) {
+  var seg = seguimientos[numero];
+  if (!seg) return pausados[numero] ? '⏸️ Pausado (atendiendo)' : '💬 En conversación';
+  var map = {
+    saludo_sin_respuesta: '👋 Saludó sin responder',
+    esperando_info: '📏 Prometió medidas/fotos',
+    esperando_decision: '🖼️ Esperando decisión',
+    cotizacion_enviada: '📋 Cotización enviada',
+    cerrado_venta: '✅ Venta cerrada',
+    cerrado_perdido: '❌ Perdido / cerrado'
+  };
+  return map[seg.estado] || seg.estado;
+}
+
+app.get('/panel', function(req, res) {
+  if (req.query.token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
+
+  // Lista de leads ordenada por actividad reciente
+  var leads = Object.keys(conversaciones).filter(function(n) { return n !== LILI_NUMERO; });
+
+  // Ordenar: los que tienen mensajes más recientes primero (aprox, por orden de objeto)
+  leads.reverse();
+
+  var html = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
+  html += '<title>Panel — Hecho por Lili</title><style>';
+  html += 'body{font-family:-apple-system,sans-serif;background:#f5f3ef;margin:0;padding:16px;color:#3a342e}';
+  html += 'h1{font-size:20px;margin-bottom:4px}.sub{color:#7a7268;font-size:13px;margin-bottom:18px}';
+  html += '.lead{display:block;background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:10px;text-decoration:none;color:#3a342e;box-shadow:0 1px 3px rgba(0,0,0,.06)}';
+  html += '.num{font-family:monospace;font-size:15px;font-weight:600}';
+  html += '.est{font-size:13px;color:#7a7268;margin-top:4px}';
+  html += '.vacio{color:#aaa;font-style:italic}';
+  html += '</style></head><body>';
+  html += '<h1>🌿 Panel de Conversaciones</h1>';
+  html += '<div class="sub">' + leads.length + ' leads · toca uno para ver la conversación</div>';
+
+  if (leads.length === 0) {
+    html += '<div class="vacio">No hay conversaciones registradas todavía.</div>';
+  } else {
+    leads.forEach(function(n) {
+      html += '<a class="lead" href="/panel/chat?token=' + CONTROL_TOKEN + '&numero=' + n + '">';
+      html += '<div class="num">+' + n + '</div>';
+      html += '<div class="est">' + estadoLegible(n) + '</div>';
+      html += '</a>';
+    });
+  }
+
+  html += '</body></html>';
+  res.send(html);
+});
+
+app.get('/panel/chat', function(req, res) {
+  if (req.query.token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
+  var numero = req.query.numero;
+  if (numero) numero = numero.replace(/[+\s-]/g, '');
+
+  var conv = conversaciones[numero] || [];
+
+  var html = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
+  html += '<title>+' + numero + '</title><style>';
+  html += 'body{font-family:-apple-system,sans-serif;background:#e5ddd5;margin:0;padding:0;color:#3a342e}';
+  html += '.top{background:#3a342e;color:#fff;padding:14px 16px;position:sticky;top:0}';
+  html += '.top a{color:#cdbfae;text-decoration:none;font-size:14px}.top .n{font-family:monospace;font-size:16px;font-weight:600;margin-top:2px}';
+  html += '.est{font-size:12px;color:#cdbfae;margin-top:2px}';
+  html += '.wrap{padding:16px;padding-bottom:40px}';
+  html += '.msg{max-width:78%;padding:9px 13px;border-radius:12px;margin-bottom:8px;font-size:15px;line-height:1.35;white-space:pre-wrap;word-wrap:break-word}';
+  html += '.lead{background:#fff;align-self:flex-start;margin-right:auto}';
+  html += '.lili{background:#d9fdd3;margin-left:auto}';
+  html += '.row{display:flex}';
+  html += '.vacio{color:#888;font-style:italic;padding:20px}';
+  html += '</style></head><body>';
+  html += '<div class="top"><a href="/panel?token=' + CONTROL_TOKEN + '">← Volver a leads</a>';
+  html += '<div class="n">+' + numero + '</div>';
+  html += '<div class="est">' + estadoLegible(numero) + '</div></div>';
+  html += '<div class="wrap">';
+
+  if (conv.length === 0) {
+    html += '<div class="vacio">No hay mensajes guardados de este número.</div>';
+  } else {
+    conv.forEach(function(m) {
+      var clase = m.role === 'user' ? 'lead' : 'lili';
+      html += '<div class="row"><div class="msg ' + clase + '">' + escapeHtml(m.content) + '</div></div>';
+    });
+  }
+
+  html += '</div></body></html>';
+  res.send(html);
+});
+
+function escapeHtml(texto) {
+  return String(texto)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 app.get('/webhook', function(req, res) {
   var mode = req.query['hub.mode'];
@@ -664,9 +845,10 @@ function procesarMensaje(from, texto) {
       pausados[from] = true;
       console.log('Escalado. Numero pausado: ' + from);
     } else {
-      // El agente respondió normal. Si el lead no avanza, reactivar en 24h.
-      if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info')) {
-        activarSeguimiento(from, 'saludo_sin_respuesta');
+      // El agente respondió normal (saludo/info). Marcar para reactivación diaria si no avanza.
+      // No usa temporizador individual — la tanda de las 7pm revisa todos juntos.
+      if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
+        seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
       }
     }
 
