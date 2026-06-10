@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const { Pool } = require('pg');
 
 const app = express();
 app.use(express.json());
@@ -14,73 +15,123 @@ const LILI_NUMERO = '573008654636';
 const TELEGRAM_TOKEN = '8868128825:AAEv_STo16YwsORBZepK2_raWfAhMNMTiiU';
 const TELEGRAM_CHAT_ID = '2056034612';
 
+// ─── BASE DE DATOS POSTGRESQL ──────────────────────────────────────────────
+// Toda la persistencia (conversaciones, pausas, seguimientos) vive aqui, no en
+// memoria ni en /tmp. Asi sobrevive a reinicios y deploys de Railway.
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+// Estado en memoria (espejo de la BD para acceso rapido).
+// Se carga desde la BD al arrancar y se mantiene sincronizado con cada cambio.
+const conversaciones = {};
 const pausados = {};
-const procesando = {}; // evita procesar dos mensajes del mismo número al mismo tiempo
+const seguimientos = {};
+const procesando = {}; // evita procesar dos mensajes del mismo numero a la vez
 let pausadoTodo = false;
+let bdLista = false;
 
-// ─── HISTORIAL PERSISTENTE EN DISCO ───────────────────────────────────────
-const fs = require('fs');
-const HISTORIAL_PATH = '/tmp/conversaciones.json';
-
-function cargarHistorial() {
+// Crear tablas si no existen + cargar todo a memoria
+async function inicializarBD() {
   try {
-    if (fs.existsSync(HISTORIAL_PATH)) {
-      var data = fs.readFileSync(HISTORIAL_PATH, 'utf8');
-      return JSON.parse(data);
-    }
-  } catch(e) {
-    console.error('Error cargando historial:', e.message);
+    await pool.query('CREATE TABLE IF NOT EXISTS conversaciones (numero TEXT PRIMARY KEY, mensajes JSONB NOT NULL DEFAULT \'[]\')');
+    await pool.query('CREATE TABLE IF NOT EXISTS pausados (numero TEXT PRIMARY KEY)');
+    await pool.query('CREATE TABLE IF NOT EXISTS seguimientos (numero TEXT PRIMARY KEY, estado TEXT NOT NULL, timestamp BIGINT NOT NULL, intentos INT NOT NULL DEFAULT 0, ultimo_mensaje_lead BIGINT)');
+    await pool.query('CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)');
+
+    var rc = await pool.query('SELECT numero, mensajes FROM conversaciones');
+    rc.rows.forEach(function(row) { conversaciones[row.numero] = row.mensajes || []; });
+
+    var rp = await pool.query('SELECT numero FROM pausados');
+    rp.rows.forEach(function(row) { pausados[row.numero] = true; });
+
+    var rs = await pool.query('SELECT numero, estado, timestamp, intentos, ultimo_mensaje_lead FROM seguimientos');
+    rs.rows.forEach(function(row) {
+      seguimientos[row.numero] = {
+        estado: row.estado,
+        timestamp: Number(row.timestamp),
+        intentos: row.intentos,
+        ultimoMensajeLead: row.ultimo_mensaje_lead ? Number(row.ultimo_mensaje_lead) : undefined
+      };
+    });
+
+    var ra = await pool.query("SELECT valor FROM ajustes WHERE clave = 'pausadoTodo'");
+    if (ra.rows.length > 0) pausadoTodo = ra.rows[0].valor === 'true';
+
+    bdLista = true;
+    console.log('BD lista: ' + rc.rows.length + ' conversaciones, ' + rp.rows.length + ' pausados, ' + rs.rows.length + ' seguimientos');
+  } catch (e) {
+    console.error('Error inicializando BD:', e.message);
   }
-  return {};
 }
 
-function guardarHistorial() {
-  try {
-    fs.writeFileSync(HISTORIAL_PATH, JSON.stringify(conversaciones), 'utf8');
-  } catch(e) {
-    console.error('Error guardando historial:', e.message);
-  }
+// ─── FUNCIONES DE PERSISTENCIA (memoria + BD) ──────────────────────────────
+function guardarConversacion(numero) {
+  var msgs = conversaciones[numero] || [];
+  pool.query(
+    'INSERT INTO conversaciones (numero, mensajes) VALUES ($1, $2) ON CONFLICT (numero) DO UPDATE SET mensajes = $2',
+    [numero, JSON.stringify(msgs)]
+  ).catch(function(e) { console.error('Error guardando conversacion ' + numero + ':', e.message); });
 }
 
-const conversaciones = cargarHistorial();
-// ─── FIN HISTORIAL PERSISTENTE ────────────────────────────────────────────
+function marcarPausado(numero) {
+  pausados[numero] = true;
+  pool.query('INSERT INTO pausados (numero) VALUES ($1) ON CONFLICT (numero) DO NOTHING', [numero])
+    .catch(function(e) { console.error('Error pausando ' + numero + ':', e.message); });
+}
+
+function quitarPausado(numero) {
+  delete pausados[numero];
+  pool.query('DELETE FROM pausados WHERE numero = $1', [numero])
+    .catch(function(e) { console.error('Error despausando ' + numero + ':', e.message); });
+}
+
+function quitarTodosPausados() {
+  Object.keys(pausados).forEach(function(n) { delete pausados[n]; });
+  pool.query('DELETE FROM pausados')
+    .catch(function(e) { console.error('Error limpiando pausados:', e.message); });
+}
+
+function guardarSeguimiento(numero) {
+  var s = seguimientos[numero];
+  if (!s) return;
+  pool.query(
+    'INSERT INTO seguimientos (numero, estado, timestamp, intentos, ultimo_mensaje_lead) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (numero) DO UPDATE SET estado = $2, timestamp = $3, intentos = $4, ultimo_mensaje_lead = $5',
+    [numero, s.estado, s.timestamp, s.intentos, s.ultimoMensajeLead || null]
+  ).catch(function(e) { console.error('Error guardando seguimiento ' + numero + ':', e.message); });
+}
+
+function borrarSeguimiento(numero) {
+  delete seguimientos[numero];
+  pool.query('DELETE FROM seguimientos WHERE numero = $1', [numero])
+    .catch(function(e) { console.error('Error borrando seguimiento ' + numero + ':', e.message); });
+}
+
+function guardarPausadoTodo() {
+  pool.query(
+    "INSERT INTO ajustes (clave, valor) VALUES ('pausadoTodo', $1) ON CONFLICT (clave) DO UPDATE SET valor = $1",
+    [pausadoTodo ? 'true' : 'false']
+  ).catch(function(e) { console.error('Error guardando pausadoTodo:', e.message); });
+}
+// ─── FIN PERSISTENCIA ──────────────────────────────────────────────────────
 
 // ─── SISTEMA DE SEGUIMIENTO ────────────────────────────────────────────────
-// Estados posibles por número:
-// 'esperando_info'      → lead prometió mandar medidas/fotos
-// 'esperando_decision'  → Lili mandó fotos/referencias esperando que el lead decida estilo
-// 'cotizacion_enviada'  → Lili mandó cotización personalizada
-// 'cerrado_venta'       → venta cerrada, sin seguimiento
-// 'cerrado_perdido'     → lead perdido, sin seguimiento
-
-const seguimientos = {};
-// Estructura de cada entrada:
-// seguimientos[numero] = {
-//   estado: 'esperando_info' | 'esperando_decision' | 'cotizacion_enviada' | 'cerrado_venta' | 'cerrado_perdido',
-//   timestamp: Date.now(),   // momento en que se activó el estado
-//   intentos: 0              // cuántos mensajes de seguimiento ya se mandaron
-// }
-
-// Palabras clave para detectar estado por mensajes de Lili (mensajes salientes)
 const KEYWORDS_COTIZACION = ['cotización', 'cotizacion', 'propuesta', 'el valor quedaría', 'el valor quedaria', 'te paso el precio', 'precio quedaría', 'precio quedaria', 'presupuesto', 'valor total', 'anticipo'];
 const KEYWORDS_DECISION = ['te mando fotos', 'te envío fotos', 'te envio fotos', 'mira estas fotos', 'aquí unas referencias', 'aqui unas referencias', 'referencia', 'referencias', 'estas opciones', 'qué estilo', 'que estilo', 'cuál te gusta', 'cual te gusta'];
-
-// Palabras clave para detectar que el lead prometió info
 const KEYWORDS_LEAD_PROMETE = ['mañana', 'manana', 'luego te', 'te paso', 'te envío', 'te envio', 'te mando', 'después', 'despues', 'más tarde', 'mas tarde', 'esta semana', 'hoy te'];
 
-// Tiempos en milisegundos
 const TIEMPO = {
-  saludo_1:              24 * 60 * 60 * 1000,   // 24h → primer seguimiento tras saludo sin respuesta
-  saludo_2:              48 * 60 * 60 * 1000,   // 48h más → segundo y último
-  esperando_info_1:      48 * 60 * 60 * 1000,   // 48h → primer seguimiento
-  esperando_info_2:      48 * 60 * 60 * 1000,   // 48h más → segundo y último
-  esperando_decision_1:  24 * 60 * 60 * 1000,   // 24h → primer seguimiento
-  esperando_decision_2:  24 * 60 * 60 * 1000,   // 24h más → segundo y último
-  cotizacion_1:           4 * 24 * 60 * 60 * 1000, // 4 días → primer seguimiento
-  cotizacion_2:           7 * 24 * 60 * 60 * 1000, // 7 días más → segundo y último
+  saludo_1:              24 * 60 * 60 * 1000,
+  saludo_2:              48 * 60 * 60 * 1000,
+  esperando_info_1:      48 * 60 * 60 * 1000,
+  esperando_info_2:      48 * 60 * 60 * 1000,
+  esperando_decision_1:  24 * 60 * 60 * 1000,
+  esperando_decision_2:  24 * 60 * 60 * 1000,
+  cotizacion_1:           4 * 24 * 60 * 60 * 1000,
+  cotizacion_2:           7 * 24 * 60 * 60 * 1000,
 };
 
-// Mensajes de seguimiento por estado e intento
 function getMensajeSeguimiento(estado, intento, nombre) {
   var n = nombre ? nombre : '';
   var saludo = n ? ('Hola ' + n + '! 😊') : 'Hola! 😊';
@@ -104,7 +155,6 @@ function getMensajeSeguimiento(estado, intento, nombre) {
   return null;
 }
 
-// Detectar estado por mensaje saliente de Lili
 function detectarEstadoPorMensajeLili(texto) {
   var textoLower = texto.toLowerCase();
   for (var i = 0; i < KEYWORDS_COTIZACION.length; i++) {
@@ -116,7 +166,6 @@ function detectarEstadoPorMensajeLili(texto) {
   return null;
 }
 
-// Detectar si el lead prometió info
 function leadPrometioInfo(texto) {
   var textoLower = texto.toLowerCase();
   for (var i = 0; i < KEYWORDS_LEAD_PROMETE.length; i++) {
@@ -125,61 +174,48 @@ function leadPrometioInfo(texto) {
   return false;
 }
 
-// Activar seguimiento para un número
 function activarSeguimiento(numero, estado) {
-  // No activar si está cerrado
-  if (seguimientos[numero] && 
-      (seguimientos[numero].estado === 'cerrado_venta' || 
+  if (seguimientos[numero] &&
+      (seguimientos[numero].estado === 'cerrado_venta' ||
        seguimientos[numero].estado === 'cerrado_perdido')) return;
 
-  seguimientos[numero] = {
-    estado: estado,
-    timestamp: Date.now(),
-    intentos: 0
-  };
+  seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0 };
+  guardarSeguimiento(numero);
   console.log('Seguimiento activado para ' + numero + ': ' + estado);
 }
 
-// Limpiar seguimiento cuando el lead responde
 function cancelarSeguimiento(numero) {
-  if (seguimientos[numero] && 
-      seguimientos[numero].estado !== 'cerrado_venta' && 
+  if (seguimientos[numero] &&
+      seguimientos[numero].estado !== 'cerrado_venta' &&
       seguimientos[numero].estado !== 'cerrado_perdido') {
-    delete seguimientos[numero];
+    borrarSeguimiento(numero);
     console.log('Seguimiento cancelado para ' + numero + ' (respondió)');
   }
 }
 
-// Obtener nombre del lead desde historial si existe
 function getNombreLead(numero) {
   if (!conversaciones[numero]) return null;
-  // Busca si en algún momento el lead dijo su nombre (simple heurística)
-  return null; // Por ahora null, el agente ya lo maneja en conversación
+  return null;
 }
 
 // CRON: revisar seguimientos cada hora
 setInterval(function() {
+  if (!bdLista) return;
   var ahora = Date.now();
   var numeros = Object.keys(seguimientos);
-  
+
   for (var i = 0; i < numeros.length; i++) {
     var numero = numeros[i];
     var seg = seguimientos[numero];
-    
-    // Saltar cerrados
+
     if (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido') continue;
-    // Saltar saludo_sin_respuesta — se maneja en la tanda diaria de las 7pm
     if (seg.estado === 'saludo_sin_respuesta') continue;
-    // Saltar pausados globalmente
     if (pausadoTodo) continue;
-    // Saltar si está pausado manualmente (Lili lo está atendiendo)
     if (pausados[numero]) continue;
-    
+
     var transcurrido = ahora - seg.timestamp;
     var tiempoEspera = null;
-    
-    // Determinar tiempo de espera según estado e intento
-    // NOTA: saludo_sin_respuesta NO se maneja aquí — tiene su propia tanda diaria a las 7pm
+
     if (seg.estado === 'esperando_info') {
       tiempoEspera = seg.intentos === 0 ? TIEMPO.esperando_info_1 : TIEMPO.esperando_info_2;
     } else if (seg.estado === 'esperando_decision') {
@@ -187,38 +223,32 @@ setInterval(function() {
     } else if (seg.estado === 'cotizacion_enviada') {
       tiempoEspera = seg.intentos === 0 ? TIEMPO.cotizacion_1 : TIEMPO.cotizacion_2;
     }
-    
+
     if (tiempoEspera && transcurrido >= tiempoEspera) {
       seg.intentos++;
-      
+
       if (seg.intentos <= 2) {
-        // Mandar mensaje de seguimiento
         var nombre = getNombreLead(numero);
         var mensaje = getMensajeSeguimiento(seg.estado, seg.intentos, nombre);
-        
+
         if (mensaje) {
-          // Reactivar número para que el agente pueda responder si contestan
-          delete pausados[numero];
-          
+          quitarPausado(numero);
           enviarMensaje(numero, mensaje);
-          seg.timestamp = Date.now(); // resetear timer para el próximo intento
+          seg.timestamp = Date.now();
+          guardarSeguimiento(numero);
           console.log('Seguimiento enviado a ' + numero + ' (intento ' + seg.intentos + ', estado: ' + seg.estado + ')');
         }
       } else {
-        // Máximo de intentos alcanzado → cierre silencioso
         seguimientos[numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: seg.intentos };
+        guardarSeguimiento(numero);
         console.log('Lead cerrado silenciosamente (sin respuesta): ' + numero);
       }
     }
   }
-}, 60 * 60 * 1000); // cada hora
+}, 60 * 60 * 1000);
 
 // ─── TANDAS DIARIAS DE REACTIVACIÓN (12PM Y 7PM HORA COLOMBIA) ─────────────
-// Dos veces al día (mediodía y 7pm), revisa los leads que se quedaron en el
-// saludo y les manda reactivación. Dos tandas aseguran que cualquier lead reciba
-// su reactivación dentro de la ventana de 24h sin importar a qué hora saludó.
-// Envío espaciado (5 seg entre cada uno) para no saturar la API de Meta.
-var ultimaTandaReactivacion = null; // guarda "YYYY-MM-DD-H" de la última tanda
+var ultimaTandaReactivacion = null;
 
 function mensajeReactivacion(intento) {
   if (intento === 1) return 'Hola! 😊 ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
@@ -226,12 +256,11 @@ function mensajeReactivacion(intento) {
 }
 
 setInterval(function() {
-  // Hora Colombia = UTC - 5
+  if (!bdLista) return;
   var ahoraUTC = new Date();
   var horaColombia = (ahoraUTC.getUTCHours() - 5 + 24) % 24;
   var fechaColombia = new Date(ahoraUTC.getTime() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  // Solo correr a las 12pm (12h) o a las 7pm (19h), una vez por cada franja
   if (horaColombia !== 12 && horaColombia !== 19) return;
   var marca = fechaColombia + '-' + horaColombia;
   if (ultimaTandaReactivacion === marca) return;
@@ -239,7 +268,6 @@ setInterval(function() {
 
   if (pausadoTodo) { console.log('Tanda reactivación: pausado global, no se envía'); return; }
 
-  // Recolectar leads en saludo_sin_respuesta que NO estén pausados
   var candidatos = [];
   var numeros = Object.keys(seguimientos);
   for (var i = 0; i < numeros.length; i++) {
@@ -252,37 +280,35 @@ setInterval(function() {
     var ref = seg.ultimoMensajeLead || seg.timestamp;
     var horasDesde = (ahora - ref) / (60 * 60 * 1000);
 
-    // Reactivar solo si pasaron al menos 3 horas (no recién escribió) y está dentro de 24h
-    // Meta solo permite mensaje libre dentro de 24h del último mensaje del lead
     if (horasDesde >= 3 && horasDesde <= 24) {
       candidatos.push({ numero: numero, seg: seg });
     } else if (horasDesde > 24) {
-      // Fuera de ventana de 24h — no se puede mandar mensaje libre, cerrar silenciosamente
       seguimientos[numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: seg.intentos };
+      guardarSeguimiento(numero);
       console.log('Lead fuera de ventana 24h, cerrado: ' + numero);
     }
   }
 
   console.log('Tanda reactivación (' + horaColombia + 'h): ' + candidatos.length + ' leads para reactivar');
 
-  // Enviar espaciado: uno cada 5 segundos para no saturar Meta
   candidatos.forEach(function(c, idx) {
     setTimeout(function() {
-      if (pausados[c.numero]) return; // re-chequear por si fue atendido
+      if (pausados[c.numero]) return;
       c.seg.intentos++;
       if (c.seg.intentos <= 2) {
         enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos));
         c.seg.timestamp = Date.now();
+        guardarSeguimiento(c.numero);
         console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
       } else {
         seguimientos[c.numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: c.seg.intentos };
+        guardarSeguimiento(c.numero);
         console.log('Lead cerrado tras 2 reactivaciones: ' + c.numero);
       }
-    }, idx * 5000); // 5 segundos entre cada envío
+    }, idx * 5000);
   });
 
-}, 60 * 60 * 1000); // revisa cada hora, pero solo actúa a las 12pm y 7pm
-
+}, 60 * 60 * 1000);
 // ─── FIN SISTEMA DE SEGUIMIENTO ───────────────────────────────────────────
 
 const SYSTEM_PROMPT = `Eres Lili Hurtado, Diseñadora de Producto y fundadora de Hecho por Lili, marca de muebles artesanales en roble natural en Medellin, Colombia.
@@ -512,7 +538,6 @@ TIEMPO: NUNCA digas "en un momento" para cotizaciones — puede tomar horas o di
 function notificarLili(from, motivo) {
   var mensaje = '🔔 LEAD NECESITA TU ATENCION\n\nNumero: ' + from + '\nSolicitud: ' + motivo + '\n\nRevisa la conversacion y responde cuando puedas 👍';
 
-  // 1) Notificación por Telegram (canal principal — confiable, sin límites de Meta)
   axios.post(
     'https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendMessage',
     { chat_id: TELEGRAM_CHAT_ID, text: mensaje }
@@ -522,7 +547,6 @@ function notificarLili(from, motivo) {
     console.error('Error notificando Telegram:', error.response ? JSON.stringify(error.response.data) : error.message);
   });
 
-  // 2) Notificación por WhatsApp (respaldo)
   axios.post(
     'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
     { messaging_product: 'whatsapp', to: LILI_NUMERO, type: 'text', text: { body: mensaje } },
@@ -539,64 +563,52 @@ app.get('/control', function(req, res) {
   var cmd = req.query.cmd;
   var numero = req.query.numero;
   if (token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
-  // Limpiar número: quitar +, espacios y guiones
   if (numero) numero = numero.replace(/[+\s-]/g, '');
-  if (cmd === 'pausatodo') { pausadoTodo = true; return res.send('PAUSADO TODO ✅'); }
-  if (cmd === 'todo') { pausadoTodo = false; Object.keys(pausados).forEach(function(n) { delete pausados[n]; }); return res.send('REACTIVADO TODO ✅ (incluye números individuales)'); }
-  if (cmd === 'resumir') { pausadoTodo = false; return res.send('PAUSA GLOBAL QUITADA ✅ — números individuales siguen pausados'); }
-  if (cmd === 'pausa' && numero) { pausados[numero] = true; return res.send('PAUSADO ✅ ' + numero); }
-  if (cmd === 'reanudar' && numero) { delete pausados[numero]; return res.send('REACTIVADO ✅ ' + numero); }
+  if (cmd === 'pausatodo') { pausadoTodo = true; guardarPausadoTodo(); return res.send('PAUSADO TODO ✅'); }
+  if (cmd === 'todo') { pausadoTodo = false; guardarPausadoTodo(); quitarTodosPausados(); return res.send('REACTIVADO TODO ✅ (incluye números individuales)'); }
+  if (cmd === 'resumir') { pausadoTodo = false; guardarPausadoTodo(); return res.send('PAUSA GLOBAL QUITADA ✅ — números individuales siguen pausados'); }
+  if (cmd === 'pausa' && numero) { marcarPausado(numero); return res.send('PAUSADO ✅ ' + numero); }
+  if (cmd === 'reanudar' && numero) { quitarPausado(numero); return res.send('REACTIVADO ✅ ' + numero); }
   if (cmd === 'estado') return res.json({ pausadoTodo: pausadoTodo, numerosPausados: Object.keys(pausados), seguimientos: seguimientos });
-  // Nuevos comandos de cierre
   if (cmd === 'cerrado_venta' && numero) {
-    pausados[numero] = true;
+    marcarPausado(numero);
     seguimientos[numero] = { estado: 'cerrado_venta', timestamp: Date.now(), intentos: 0 };
+    guardarSeguimiento(numero);
     return res.send('CERRADO VENTA ✅ ' + numero + ' — sin más seguimiento');
   }
   if (cmd === 'cerrado_perdido' && numero) {
-    pausados[numero] = true;
+    marcarPausado(numero);
     seguimientos[numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: 0 };
+    guardarSeguimiento(numero);
     return res.send('CERRADO PERDIDO ✅ ' + numero + ' — sin más seguimiento');
   }
   return res.send('Comando no reconocido.');
 });
 
 app.get('/', function(req, res) {
-  res.json({ status: 'Agente Lili V10 activo', pausadoTodo: pausadoTodo, pausados: Object.keys(pausados).length, seguimientos: Object.keys(seguimientos).length });
+  res.json({ status: 'Agente Lili V10 activo', bd: bdLista, pausadoTodo: pausadoTodo, pausados: Object.keys(pausados).length, seguimientos: Object.keys(seguimientos).length });
 });
 
 app.get('/reporte', function(req, res) {
   if (req.query.token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
 
-  // Catalogar todos los leads conocidos (de conversaciones + seguimientos)
   var todos = {};
   Object.keys(conversaciones).forEach(function(n) { if (n !== LILI_NUMERO) todos[n] = true; });
   Object.keys(seguimientos).forEach(function(n) { if (n !== LILI_NUMERO) todos[n] = true; });
 
   var cat = {
-    en_conversacion: [],
-    saludo_sin_respuesta: [],
-    esperando_info: [],
-    esperando_decision: [],
-    cotizacion_enviada: [],
-    cerrado_venta: [],
-    cerrado_perdido: []
+    en_conversacion: [], saludo_sin_respuesta: [], esperando_info: [],
+    esperando_decision: [], cotizacion_enviada: [], cerrado_venta: [], cerrado_perdido: []
   };
 
   Object.keys(todos).forEach(function(n) {
     var seg = seguimientos[n];
-    if (!seg) {
-      // tiene conversación pero sin seguimiento activo = está conversando o pausado
-      cat.en_conversacion.push(n);
-    } else if (cat[seg.estado]) {
-      cat[seg.estado].push(n);
-    } else {
-      cat.en_conversacion.push(n);
-    }
+    if (!seg) { cat.en_conversacion.push(n); }
+    else if (cat[seg.estado]) { cat[seg.estado].push(n); }
+    else { cat.en_conversacion.push(n); }
   });
 
   var totalLeads = Object.keys(todos).length;
-
   var etiquetas = {
     en_conversacion: '💬 En conversación / atendiendo',
     saludo_sin_respuesta: '👋 Saludaron y no respondieron',
@@ -622,21 +634,16 @@ app.get('/reporte', function(req, res) {
   Object.keys(etiquetas).forEach(function(estado) {
     var lista = cat[estado];
     html += '<div class="cat"><h2>' + etiquetas[estado] + '<span class="count">' + lista.length + '</span></h2>';
-    if (lista.length === 0) {
-      html += '<div class="vacio">Ninguno por ahora</div>';
-    } else {
-      lista.forEach(function(n) { html += '<div class="num">' + n + '</div>'; });
-    }
+    if (lista.length === 0) { html += '<div class="vacio">Ninguno por ahora</div>'; }
+    else { lista.forEach(function(n) { html += '<div class="num">' + n + '</div>'; }); }
     html += '</div>';
   });
 
-  html += '<div class="total" style="margin-top:20px;font-size:13px">Nota: solo incluye leads que el agente ha registrado desde el último reinicio del sistema.</div>';
+  html += '<div class="total" style="margin-top:20px;font-size:13px">Ahora los datos son permanentes — ya no se borran con los reinicios.</div>';
   html += '</body></html>';
-
   res.send(html);
 });
 
-// ─── PANEL DE CONVERSACIONES (Etapa 1: ver leads y conversaciones) ─────────
 function estadoLegible(numero) {
   var seg = seguimientos[numero];
   if (!seg) return pausados[numero] ? '⏸️ Pausado (atendiendo)' : '💬 En conversación';
@@ -653,11 +660,7 @@ function estadoLegible(numero) {
 
 app.get('/panel', function(req, res) {
   if (req.query.token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
-
-  // Lista de leads ordenada por actividad reciente
   var leads = Object.keys(conversaciones).filter(function(n) { return n !== LILI_NUMERO; });
-
-  // Ordenar: los que tienen mensajes más recientes primero (aprox, por orden de objeto)
   leads.reverse();
 
   var html = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
@@ -682,7 +685,6 @@ app.get('/panel', function(req, res) {
       html += '</a>';
     });
   }
-
   html += '</body></html>';
   res.send(html);
 });
@@ -691,7 +693,6 @@ app.get('/panel/chat', function(req, res) {
   if (req.query.token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
   var numero = req.query.numero;
   if (numero) numero = numero.replace(/[+\s-]/g, '');
-
   var conv = conversaciones[numero] || [];
 
   var html = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
@@ -727,10 +728,8 @@ app.get('/panel/chat', function(req, res) {
       html += '<div class="row"><div class="msg ' + clase + '">' + escapeHtml(m.content) + '</div></div>';
     });
   }
-
   html += '</div>';
 
-  // Barra de respuesta
   var estaPausado = pausados[numero] ? true : false;
   html += '<div class="barra">';
   html += '<textarea id="txt" placeholder="Escribe tu respuesta..."></textarea>';
@@ -755,24 +754,21 @@ app.get('/panel/chat', function(req, res) {
   html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="Enviar"});}';
   html += 'function agente(cmd){fetch("/control?cmd="+cmd+"&numero="+NUM+"&token="+TK).then(function(){location.reload()});}';
   html += '</script>';
-
   html += '</body></html>';
   res.send(html);
 });
 
-// Endpoint para enviar respuesta desde el panel
 app.post('/panel/enviar', function(req, res) {
   if (req.body.token !== CONTROL_TOKEN) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
   var texto = req.body.texto || '';
   if (!numero || !texto) return res.json({ ok: false });
 
-  // Pausar el lead (Lili toma el control) y guardar el mensaje en el historial
-  pausados[numero] = true;
+  marcarPausado(numero);
   if (!conversaciones[numero]) conversaciones[numero] = [];
   conversaciones[numero].push({ role: 'assistant', content: texto });
   if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
-  guardarHistorial();
+  guardarConversacion(numero);
   cancelarSeguimiento(numero);
 
   enviarMensaje(numero, texto);
@@ -781,10 +777,7 @@ app.post('/panel/enviar', function(req, res) {
 });
 
 function escapeHtml(texto) {
-  return String(texto)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  return String(texto).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 app.get('/webhook', function(req, res) {
@@ -805,28 +798,22 @@ app.post('/webhook', function(req, res) {
     if (!entry) return;
     var value = entry[0].changes[0].value;
     if (!value) return;
-
-    // Ignorar eventos de estado (enviado, leído)
-    if (value.statuses) {
-      return;
-    }
+    if (value.statuses) { return; }
 
     if (value.messages) {
       var message = value.messages[0];
-
-      // Detectar si es mensaje saliente (enviado por Lili desde WhatsApp Business)
       var esSaliente = false;
       if (message.from && message.from === PHONE_NUMBER_ID) esSaliente = true;
 
       if (esSaliente && message.type === 'text') {
         var leadNumero = message.to || null;
         if (leadNumero) {
-          pausados[leadNumero] = true;
+          marcarPausado(leadNumero);
           console.log('Lili escribió a ' + leadNumero + ' — número pausado automáticamente');
           if (!conversaciones[leadNumero]) conversaciones[leadNumero] = [];
           conversaciones[leadNumero].push({ role: 'assistant', content: message.text.body });
           if (conversaciones[leadNumero].length > 12) conversaciones[leadNumero] = conversaciones[leadNumero].slice(-12);
-          guardarHistorial();
+          guardarConversacion(leadNumero);
           var estadoDetectado = detectarEstadoPorMensajeLili(message.text.body);
           if (estadoDetectado) {
             activarSeguimiento(leadNumero, estadoDetectado);
@@ -836,7 +823,6 @@ app.post('/webhook', function(req, res) {
         return;
       }
 
-      // Mensaje ENTRANTE del lead
       if (message && message.type === 'text') {
         var from = message.from;
         var texto = message.text.body;
@@ -846,9 +832,7 @@ app.post('/webhook', function(req, res) {
 
         if (leadPrometioInfo(texto) && !pausados[from]) {
           setTimeout(function() {
-            if (!pausados[from]) {
-              activarSeguimiento(from, 'esperando_info');
-            }
+            if (!pausados[from]) { activarSeguimiento(from, 'esperando_info'); }
           }, 2000);
         }
 
@@ -869,47 +853,34 @@ function procesarMensaje(from, texto) {
   if (!conversaciones[from]) conversaciones[from] = [];
   conversaciones[from].push({ role: 'user', content: texto });
   if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
-  guardarHistorial();
+  guardarConversacion(from);
 
   axios.post(
     'https://api.anthropic.com/v1/messages',
-    {
-      model: 'claude-haiku-4-5',
-      max_tokens: 600,
-      system: SYSTEM_PROMPT,
-      messages: conversaciones[from]
-    },
-    {
-      headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-      }
-    }
+    { model: 'claude-haiku-4-5', max_tokens: 600, system: SYSTEM_PROMPT, messages: conversaciones[from] },
+    { headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' } }
   ).then(function(response) {
     var respuesta = response.data.content[0].text;
     console.log('Claude: ' + respuesta);
     conversaciones[from].push({ role: 'assistant', content: respuesta });
-    guardarHistorial();
+    guardarConversacion(from);
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
     var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').trim();
 
     if (necesitaEscalar) {
       notificarLili(from, texto.substring(0, 100));
-      pausados[from] = true;
+      marcarPausado(from);
       console.log('Escalado. Numero pausado: ' + from);
     } else {
-      // El agente respondió normal (saludo/info). Marcar para reactivación diaria si no avanza.
-      // No usa temporizador individual — la tanda de las 7pm revisa todos juntos.
       if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
         seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
+        guardarSeguimiento(from);
       }
     }
 
     enviarMensaje(from, textoLimpio);
     delete procesando[from];
-
   }).catch(function(error) {
     console.error('Error Claude:', error.response ? JSON.stringify(error.response.data) : error.message);
     delete procesando[from];
@@ -929,8 +900,11 @@ function enviarMensaje(to, texto) {
   });
 }
 
-app.listen(PORT, function() {
-  console.log('Agente Lili V10 en puerto ' + PORT);
+// Arrancar: primero conectar a la BD, luego levantar el servidor
+inicializarBD().then(function() {
+  app.listen(PORT, function() {
+    console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
+  });
 });
 
 module.exports = app;
