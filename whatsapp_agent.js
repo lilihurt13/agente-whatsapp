@@ -712,7 +712,7 @@ app.get('/panel/chat', function(req, res) {
   html += '.top a{display:inline-block;color:#fff;background:rgba(255,255,255,.15);text-decoration:none;font-size:15px;padding:8px 14px;border-radius:8px;margin-bottom:10px}';
   html += '.top .n{font-family:monospace;font-size:16px;font-weight:600;margin-top:2px}';
   html += '.est{font-size:12px;color:#cdbfae;margin-top:2px}';
-  html += '.wrap{padding:16px;padding-bottom:170px}';
+  html += '.wrap{padding:16px;padding-bottom:380px}';
   html += '.msg{max-width:78%;padding:9px 13px;border-radius:12px;margin-bottom:8px;font-size:15px;line-height:1.35;white-space:pre-wrap;word-wrap:break-word}';
   html += '.lead{background:#fff;align-self:flex-start;margin-right:auto}';
   html += '.lili{background:#d9fdd3;margin-left:auto}';
@@ -793,6 +793,7 @@ app.get('/panel/chat', function(req, res) {
   html += 'fetch("/control?cmd="+cmd+"&numero="+NUM+"&token="+TK)';
   html += '.then(function(){setTimeout(function(){location.reload()},700)})';
   html += '.catch(function(){alert("Error de conexion");b.disabled=false;});}';
+  html += 'window.scrollTo(0, document.body.scrollHeight);';
   html += '</script>';
   html += '</body></html>';
   res.send(html);
