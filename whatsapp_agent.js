@@ -724,6 +724,12 @@ app.get('/panel/chat', function(req, res) {
   html += '.btn{flex:1;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:600;cursor:pointer}';
   html += '.btn-enviar{background:#3a342e;color:#fff}';
   html += '.btn-agente{background:#e8e3db;color:#3a342e}';
+  html += '.marcar-titulo{font-size:11px;color:#7a7268;text-align:center;margin-top:10px;margin-bottom:6px}';
+  html += '.fila-marcar{display:flex;gap:6px}';
+  html += '.btn-marcar{flex:1;border:1px solid #cdbfae;background:#fff;color:#5a534b;border-radius:8px;padding:9px 4px;font-size:12px;font-weight:600;cursor:pointer}';
+  html += '.btn-cerrar{flex:1;border:none;border-radius:8px;padding:10px 4px;font-size:12px;font-weight:600;cursor:pointer;color:#fff}';
+  html += '.btn-venta{background:#4a7c4e}';
+  html += '.btn-perdido{background:#a85a4a}';
   html += '.aviso{font-size:12px;color:#7a7268;text-align:center;margin-top:6px}';
   html += '</style></head><body>';
   html += '<div class="top"><a href="/panel?token=' + CONTROL_TOKEN + '">← Volver a leads</a>';
@@ -753,6 +759,17 @@ app.get('/panel/chat', function(req, res) {
   }
   html += '</div>';
   html += '<div class="aviso">' + (estaPausado ? 'El agente está pausado — tú atiendes este lead' : 'El agente está activo en este lead') + '</div>';
+  html += '<div class="marcar-titulo">Avisarle al agente que ya enviaste (por WhatsApp):</div>';
+  html += '<div class="fila-marcar">';
+  html += '<button class="btn-marcar" onclick="marcar(\'esperando_decision\',event)">📸 Fotos enviadas</button>';
+  html += '<button class="btn-marcar" onclick="marcar(\'cotizacion_enviada\',event)">📋 Cotización enviada</button>';
+  html += '<button class="btn-marcar" onclick="marcar(\'esperando_info\',event)">📏 Espero medidas</button>';
+  html += '</div>';
+  html += '<div class="marcar-titulo">Cerrar este lead:</div>';
+  html += '<div class="fila-marcar">';
+  html += '<button class="btn-cerrar btn-venta" onclick="cerrar(\'cerrado_venta\',event)">✅ Venta cerrada</button>';
+  html += '<button class="btn-cerrar btn-perdido" onclick="cerrar(\'cerrado_perdido\',event)">❌ No va a comprar</button>';
+  html += '</div>';
   html += '</div>';
 
   html += '<script>';
@@ -764,6 +781,18 @@ app.get('/panel/chat', function(req, res) {
   html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){location.reload()}else{alert("Error al enviar");b.disabled=false;b.textContent="Enviar"}})';
   html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="Enviar"});}';
   html += 'function agente(cmd){fetch("/control?cmd="+cmd+"&numero="+NUM+"&token="+TK).then(function(){location.reload()});}';
+  html += 'function marcar(estado,e){';
+  html += 'var b=e.target;var orig=b.textContent;b.disabled=true;b.textContent="✓ Listo";';
+  html += 'fetch("/panel/marcar",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK,numero:NUM,estado:estado})})';
+  html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){setTimeout(function(){location.reload()},700)}else{alert("Error");b.disabled=false;b.textContent=orig}})';
+  html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent=orig});}';
+  html += 'function cerrar(cmd,e){';
+  html += 'var msg=cmd==="cerrado_venta"?"¿Marcar este lead como VENTA CERRADA? Se detiene todo el seguimiento.":"¿Marcar este lead como PERDIDO? Se detiene todo el seguimiento.";';
+  html += 'if(!confirm(msg))return;';
+  html += 'var b=e.target;b.disabled=true;b.textContent="✓ Listo";';
+  html += 'fetch("/control?cmd="+cmd+"&numero="+NUM+"&token="+TK)';
+  html += '.then(function(){setTimeout(function(){location.reload()},700)})';
+  html += '.catch(function(){alert("Error de conexion");b.disabled=false;});}';
   html += '</script>';
   html += '</body></html>';
   res.send(html);
@@ -784,6 +813,22 @@ app.post('/panel/enviar', function(req, res) {
 
   enviarMensaje(numero, texto);
   console.log('Respuesta manual desde panel a ' + numero);
+  res.json({ ok: true });
+});
+
+// Endpoint para marcar un estado de seguimiento desde el panel
+// (cuando Lili envía fotos/cotización/referencias por fuera y quiere avisarle al agente)
+app.post('/panel/marcar', function(req, res) {
+  if (req.body.token !== CONTROL_TOKEN) return res.status(403).json({ ok: false });
+  var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
+  var estado = req.body.estado || '';
+  var estadosValidos = ['esperando_info', 'esperando_decision', 'cotizacion_enviada'];
+  if (!numero || estadosValidos.indexOf(estado) === -1) return res.json({ ok: false });
+
+  // Activar el seguimiento con el estado indicado (resetea timer e intentos)
+  seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0 };
+  guardarSeguimiento(numero);
+  console.log('Estado marcado desde panel para ' + numero + ': ' + estado);
   res.json({ ok: true });
 });
 
