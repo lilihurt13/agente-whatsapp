@@ -16,23 +16,18 @@ const TELEGRAM_TOKEN = '8868128825:AAEv_STo16YwsORBZepK2_raWfAhMNMTiiU';
 const TELEGRAM_CHAT_ID = '2056034612';
 
 // ─── BASE DE DATOS POSTGRESQL ──────────────────────────────────────────────
-// Toda la persistencia (conversaciones, pausas, seguimientos) vive aqui, no en
-// memoria ni en /tmp. Asi sobrevive a reinicios y deploys de Railway.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Estado en memoria (espejo de la BD para acceso rapido).
-// Se carga desde la BD al arrancar y se mantiene sincronizado con cada cambio.
 const conversaciones = {};
 const pausados = {};
 const seguimientos = {};
-const procesando = {}; // evita procesar dos mensajes del mismo numero a la vez
+const procesando = {};
 let pausadoTodo = false;
 let bdLista = false;
 
-// Crear tablas si no existen + cargar todo a memoria
 async function inicializarBD() {
   try {
     await pool.query('CREATE TABLE IF NOT EXISTS conversaciones (numero TEXT PRIMARY KEY, mensajes JSONB NOT NULL DEFAULT \'[]\')');
@@ -66,7 +61,6 @@ async function inicializarBD() {
   }
 }
 
-// ─── FUNCIONES DE PERSISTENCIA (memoria + BD) ──────────────────────────────
 function guardarConversacion(numero) {
   var msgs = conversaciones[numero] || [];
   pool.query(
@@ -114,7 +108,6 @@ function guardarPausadoTodo() {
     [pausadoTodo ? 'true' : 'false']
   ).catch(function(e) { console.error('Error guardando pausadoTodo:', e.message); });
 }
-// ─── FIN PERSISTENCIA ──────────────────────────────────────────────────────
 
 // ─── SISTEMA DE SEGUIMIENTO ────────────────────────────────────────────────
 const KEYWORDS_COTIZACION = ['cotización', 'cotizacion', 'propuesta', 'el valor quedaría', 'el valor quedaria', 'te paso el precio', 'precio quedaría', 'precio quedaria', 'presupuesto', 'valor total', 'anticipo'];
@@ -138,19 +131,19 @@ function getMensajeSeguimiento(estado, intento, nombre) {
 
   if (estado === 'saludo_sin_respuesta') {
     if (intento === 1) return saludo + ' ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
-    if (intento === 2) return saludo + ' No hay afán 😊 Si en algún momento quieres retomar, aquí estoy con gusto. ¡Cualquier cosa me escribes!';
+    if (intento === 2) return saludo + ' Aquí estoy cuando quieras retomar 🌿';
   }
   if (estado === 'esperando_info') {
     if (intento === 1) return saludo + ' Solo quería saber si pudiste tomar las medidas o fotos que necesitabas. Cuando las tengas me avisas y te preparo todo 🌿';
-    if (intento === 2) return saludo + ' Entiendo que el día a día es ocupado 😊 Si en algún momento quieres retomar el proyecto, aquí estamos con gusto. ¡Cualquier cosa me escribes!';
+    if (intento === 2) return saludo + ' Entiendo que el día a día es ocupado 😊 Si en algún momento quieres retomar el proyecto, aquí estamos con gusto.';
   }
   if (estado === 'esperando_decision') {
     if (intento === 1) return saludo + ' ¿Pudiste ver las fotos que te envié? ¿Alguna opción te gustó más? 🌿';
-    if (intento === 2) return saludo + ' No hay afán 😊 Cuando tengas un momento y quieras retomar, aquí estoy. ¡Con gusto seguimos!';
+    if (intento === 2) return saludo + ' No hay afán 😊 Cuando tengas un momento y quieras retomar, aquí estoy.';
   }
   if (estado === 'cotizacion_enviada') {
     if (intento === 1) return saludo + ' ¿Tuviste tiempo de revisar la propuesta que te envié? Cualquier duda con gusto te la resuelvo 🌿';
-    if (intento === 2) return saludo + ' Solo paso a saludarte 🌿 Si en algún momento quieres retomar el proyecto, aquí estamos. ¡Será un placer trabajar contigo!';
+    if (intento === 2) return saludo + ' Si en algún momento quieres retomar el proyecto, aquí estamos. ¡Será un placer trabajar contigo!';
   }
   return null;
 }
@@ -198,7 +191,6 @@ function getNombreLead(numero) {
   return null;
 }
 
-// CRON: revisar seguimientos cada hora
 setInterval(function() {
   if (!bdLista) return;
   var ahora = Date.now();
@@ -252,7 +244,7 @@ var ultimaTandaReactivacion = null;
 
 function mensajeReactivacion(intento) {
   if (intento === 1) return 'Hola! 😊 ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
-  return 'Hola! 😊 No hay afán. Si en algún momento quieres retomar, aquí estoy con gusto 🌿';
+  return 'Hola! 😊 Aquí estoy cuando quieras retomar 🌿';
 }
 
 setInterval(function() {
@@ -381,6 +373,14 @@ REGLA MAESTRA DE INSTALACIÓN Y ENVÍO (CRÍTICA — APLICA A TODOS LOS PRODUCTO
   • Mesa de centro con jardinera → NO requiere instalación. Solo Medellín.
   • Cama → requiere instalación (la instala Lili). Solo Medellín, sin envío a otras ciudades.
 
+PROCESO DE PAGO Y ANTICIPO (APLICAR CUANDO EL LEAD CONFIRMA QUE QUIERE ARRANCAR):
+Cuando el lead dice que sí quiere hacer el pedido, responde UNA SOLA VEZ con esto y escala:
+"Perfecto 🌿 Para arrancar con tu pedido: el 60% de anticipo nos permite iniciar la producción, y el 40% restante lo pagas al momento de la entrega. Te paso los datos de pago ahora. [ESCALAR]"
+IMPORTANTE:
+- NUNCA repitas el proceso de pago más de una vez en la misma conversación.
+- NUNCA preguntes cómo va a pagar ni ofrezcas opciones de pago — Lili confirma los datos directamente.
+- NUNCA menciones el anticipo antes de que el lead confirme que quiere comprar.
+
 CATALOGO COMPLETO:
 
 1. ESCRITORIO FLOTANTE (producto estrella)
@@ -450,15 +450,15 @@ Si el lead dice que sí le sirve la de 60cm, responde:
 "Perfecto 😊 Tu repisa de 60cm en roble macizo, lista en 5-6 días con instalación incluida en Medellín. ¿Arrancamos?"
 NO pidas dirección ni datos de pago todavía.
 
-PASO 2B — Lead dice sí a arrancar → escalar a Lili:
-"Qué bueno 🌿 En un momento te confirmo todos los detalles para arrancar. [ESCALAR]"
+PASO 2B — Lead dice sí a arrancar → proceso de pago + escalar:
+"Perfecto 🌿 Para arrancar: el 60% de anticipo inicia la producción, y el 40% restante lo pagas al momento de la entrega. Te paso los datos de pago ahora. [ESCALAR]"
 
 PASO 2C — Lead pide otra medida ESTÁNDAR (solo 80, 100, 120, 140, 160) → da precio de ESA medida + pre-cierre:
 Ejemplo: dice "100cm" → "La de 100cm queda en $320.000 😊 Roble macizo, 15cm de profundidad, 3.6cm de espesor, herrajes invisibles, esquinas redondeadas, lista en 5-6 días con instalación incluida en Medellín. ¿Arrancamos con esa?"
 IMPORTANTE: Si pide una medida que NO está en la lista de 6 (ej: 70cm, 90cm, 110cm, 130cm) → NO inventes precio, escala: "Esa medida la fabricamos con gusto 😊 Permíteme un momento que te confirmo el valor exacto. [ESCALAR]"
 
-PASO 3 — Lead dice sí a arrancar con otra medida → escalar:
-"Qué bueno 🌿 En un momento te confirmo todos los detalles para arrancar. [ESCALAR]"
+PASO 3 — Lead dice sí a arrancar con otra medida → proceso de pago + escalar:
+"Perfecto 🌿 Para arrancar: el 60% de anticipo inicia la producción, y el 40% restante lo pagas al momento de la entrega. Te paso los datos de pago ahora. [ESCALAR]"
 
 PASO 4 — Si lead confirma → escalar a Lili para proceso de pago
 PASO 5 — Si lead pide medida mayor de 160cm o cualquier medida no listada → escalar para precio
@@ -823,8 +823,6 @@ app.post('/panel/enviar', function(req, res) {
   res.json({ ok: true });
 });
 
-// Endpoint para marcar un estado de seguimiento desde el panel
-// (cuando Lili envía fotos/cotización/referencias por fuera y quiere avisarle al agente)
 app.post('/panel/marcar', function(req, res) {
   if (req.body.token !== CONTROL_TOKEN) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
@@ -832,7 +830,6 @@ app.post('/panel/marcar', function(req, res) {
   var estadosValidos = ['esperando_info', 'esperando_decision', 'cotizacion_enviada'];
   if (!numero || estadosValidos.indexOf(estado) === -1) return res.json({ ok: false });
 
-  // Activar el seguimiento con el estado indicado (resetea timer e intentos)
   seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0 };
   guardarSeguimiento(numero);
   console.log('Estado marcado desde panel para ' + numero + ': ' + estado);
@@ -891,9 +888,6 @@ app.post('/webhook', function(req, res) {
         var texto = message.text.body;
         console.log('Mensaje de ' + from + ': ' + texto);
 
-        // GUARDAR SIEMPRE el mensaje del lead en la BD, aunque esté pausado.
-        // Así Lili ve todas las respuestas en el panel para hacer seguimiento.
-        // La pausa solo evita que el AGENTE responda solo — no que se registre el mensaje.
         if (!conversaciones[from]) conversaciones[from] = [];
         conversaciones[from].push({ role: 'user', content: texto });
         if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
@@ -921,8 +915,6 @@ app.post('/webhook', function(req, res) {
 });
 
 function procesarMensaje(from, texto) {
-  // El mensaje del lead ya fue agregado al historial y guardado en el webhook.
-  // Aquí solo generamos la respuesta del agente.
   if (!conversaciones[from]) conversaciones[from] = [];
 
   axios.post(
@@ -970,7 +962,6 @@ function enviarMensaje(to, texto) {
   });
 }
 
-// Arrancar: primero conectar a la BD, luego levantar el servidor
 inicializarBD().then(function() {
   app.listen(PORT, function() {
     console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
