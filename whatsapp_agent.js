@@ -16,18 +16,24 @@ const TELEGRAM_TOKEN = '8868128825:AAEv_STo16YwsORBZepK2_raWfAhMNMTiiU';
 const TELEGRAM_CHAT_ID = '2056034612';
 
 // ─── BASE DE DATOS POSTGRESQL ──────────────────────────────────────────────
+// Toda la persistencia (conversaciones, pausas, seguimientos) vive aqui, no en
+// memoria ni en /tmp. Asi sobrevive a reinicios y deploys de Railway.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
+// Estado en memoria (espejo de la BD para acceso rapido).
+// Se carga desde la BD al arrancar y se mantiene sincronizado con cada cambio.
 const conversaciones = {};
 const pausados = {};
 const seguimientos = {};
-const procesando = {};
+const ultimaActividad = {}; // timestamp del último mensaje por lead, para ordenar el panel
+const procesando = {}; // evita procesar dos mensajes del mismo numero a la vez
 let pausadoTodo = false;
 let bdLista = false;
 
+// Crear tablas si no existen + cargar todo a memoria
 async function inicializarBD() {
   try {
     await pool.query('CREATE TABLE IF NOT EXISTS conversaciones (numero TEXT PRIMARY KEY, mensajes JSONB NOT NULL DEFAULT \'[]\')');
@@ -36,7 +42,13 @@ async function inicializarBD() {
     await pool.query('CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)');
 
     var rc = await pool.query('SELECT numero, mensajes FROM conversaciones');
-    rc.rows.forEach(function(row) { conversaciones[row.numero] = row.mensajes || []; });
+    var baseT = Date.now();
+    rc.rows.forEach(function(row, idx) {
+      conversaciones[row.numero] = row.mensajes || [];
+      // Marca base por orden de carga (los más recientes en la BD quedan arriba).
+      // Se irá actualizando con cada mensaje nuevo real.
+      ultimaActividad[row.numero] = baseT - (rc.rows.length - idx) * 1000;
+    });
 
     var rp = await pool.query('SELECT numero FROM pausados');
     rp.rows.forEach(function(row) { pausados[row.numero] = true; });
@@ -61,7 +73,9 @@ async function inicializarBD() {
   }
 }
 
+// ─── FUNCIONES DE PERSISTENCIA (memoria + BD) ──────────────────────────────
 function guardarConversacion(numero) {
+  ultimaActividad[numero] = Date.now();
   var msgs = conversaciones[numero] || [];
   pool.query(
     'INSERT INTO conversaciones (numero, mensajes) VALUES ($1, $2) ON CONFLICT (numero) DO UPDATE SET mensajes = $2',
@@ -108,6 +122,7 @@ function guardarPausadoTodo() {
     [pausadoTodo ? 'true' : 'false']
   ).catch(function(e) { console.error('Error guardando pausadoTodo:', e.message); });
 }
+// ─── FIN PERSISTENCIA ──────────────────────────────────────────────────────
 
 // ─── SISTEMA DE SEGUIMIENTO ────────────────────────────────────────────────
 const KEYWORDS_COTIZACION = ['cotización', 'cotizacion', 'propuesta', 'el valor quedaría', 'el valor quedaria', 'te paso el precio', 'precio quedaría', 'precio quedaria', 'presupuesto', 'valor total', 'anticipo'];
@@ -131,19 +146,19 @@ function getMensajeSeguimiento(estado, intento, nombre) {
 
   if (estado === 'saludo_sin_respuesta') {
     if (intento === 1) return saludo + ' ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
-    if (intento === 2) return saludo + ' Aquí estoy cuando quieras retomar 🌿';
+    if (intento === 2) return saludo + ' No hay afán 😊 Si en algún momento quieres retomar, aquí estoy con gusto. ¡Cualquier cosa me escribes!';
   }
   if (estado === 'esperando_info') {
     if (intento === 1) return saludo + ' Solo quería saber si pudiste tomar las medidas o fotos que necesitabas. Cuando las tengas me avisas y te preparo todo 🌿';
-    if (intento === 2) return saludo + ' Entiendo que el día a día es ocupado 😊 Si en algún momento quieres retomar el proyecto, aquí estamos con gusto.';
+    if (intento === 2) return saludo + ' Entiendo que el día a día es ocupado 😊 Si en algún momento quieres retomar el proyecto, aquí estamos con gusto. ¡Cualquier cosa me escribes!';
   }
   if (estado === 'esperando_decision') {
     if (intento === 1) return saludo + ' ¿Pudiste ver las fotos que te envié? ¿Alguna opción te gustó más? 🌿';
-    if (intento === 2) return saludo + ' No hay afán 😊 Cuando tengas un momento y quieras retomar, aquí estoy.';
+    if (intento === 2) return saludo + ' No hay afán 😊 Cuando tengas un momento y quieras retomar, aquí estoy. ¡Con gusto seguimos!';
   }
   if (estado === 'cotizacion_enviada') {
     if (intento === 1) return saludo + ' ¿Tuviste tiempo de revisar la propuesta que te envié? Cualquier duda con gusto te la resuelvo 🌿';
-    if (intento === 2) return saludo + ' Si en algún momento quieres retomar el proyecto, aquí estamos. ¡Será un placer trabajar contigo!';
+    if (intento === 2) return saludo + ' Solo paso a saludarte 🌿 Si en algún momento quieres retomar el proyecto, aquí estamos. ¡Será un placer trabajar contigo!';
   }
   return null;
 }
@@ -191,6 +206,7 @@ function getNombreLead(numero) {
   return null;
 }
 
+// CRON: revisar seguimientos cada hora
 setInterval(function() {
   if (!bdLista) return;
   var ahora = Date.now();
@@ -244,7 +260,7 @@ var ultimaTandaReactivacion = null;
 
 function mensajeReactivacion(intento) {
   if (intento === 1) return 'Hola! 😊 ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
-  return 'Hola! 😊 Aquí estoy cuando quieras retomar 🌿';
+  return 'Hola! 😊 No hay afán. Si en algún momento quieres retomar, aquí estoy con gusto 🌿';
 }
 
 setInterval(function() {
@@ -373,14 +389,6 @@ REGLA MAESTRA DE INSTALACIÓN Y ENVÍO (CRÍTICA — APLICA A TODOS LOS PRODUCTO
   • Mesa de centro con jardinera → NO requiere instalación. Solo Medellín.
   • Cama → requiere instalación (la instala Lili). Solo Medellín, sin envío a otras ciudades.
 
-PROCESO DE PAGO Y ANTICIPO (APLICAR CUANDO EL LEAD CONFIRMA QUE QUIERE ARRANCAR):
-Cuando el lead dice que sí quiere hacer el pedido, responde UNA SOLA VEZ con esto y escala:
-"Perfecto 🌿 Para arrancar con tu pedido: el 60% de anticipo nos permite iniciar la producción, y el 40% restante lo pagas al momento de la entrega. Te paso los datos de pago ahora. [ESCALAR]"
-IMPORTANTE:
-- NUNCA repitas el proceso de pago más de una vez en la misma conversación.
-- NUNCA preguntes cómo va a pagar ni ofrezcas opciones de pago — Lili confirma los datos directamente.
-- NUNCA menciones el anticipo antes de que el lead confirme que quiere comprar.
-
 CATALOGO COMPLETO:
 
 1. ESCRITORIO FLOTANTE (producto estrella)
@@ -427,7 +435,7 @@ CATALOGO COMPLETO:
 
 REGLA GLOBAL REPISAS — NUNCA menciones el uso específico (TV, baño, sala, cocina, etc.) en ningún mensaje. Habla siempre de la repisa de forma genérica. Si el lead lo menciona, ignóralo y sigue el flujo normal sin referenciarlo.
 Las repisas son compra de impulso. El precio ya viene filtrado desde el anuncio.
-- Para repisas NO aplica la regla de "nunca precio primero" — el cliente ya lo vio en el anuncio
+- REGLA DE ORO DEL PRECIO (APLICA A TODO, INCLUSO REPISAS): el precio SIEMPRE va al FINAL del mensaje, NUNCA en la primera línea. Primero las características y el valor del producto (roble macizo, herrajes invisibles, esquinas redondeadas, profundidad, etc.), y al final, después de todo eso, el precio. NUNCA arranques un mensaje con "La repisa vale $X" o "Queda en $X". El precio cierra el mensaje, no lo abre.
 
 FLUJO OBLIGATORIO PARA REPISAS — SIGUE ESTE ORDEN SIEMPRE:
 
@@ -450,15 +458,15 @@ Si el lead dice que sí le sirve la de 60cm, responde:
 "Perfecto 😊 Tu repisa de 60cm en roble macizo, lista en 5-6 días con instalación incluida en Medellín. ¿Arrancamos?"
 NO pidas dirección ni datos de pago todavía.
 
-PASO 2B — Lead dice sí a arrancar → proceso de pago + escalar:
-"Perfecto 🌿 Para arrancar: el 60% de anticipo inicia la producción, y el 40% restante lo pagas al momento de la entrega. Te paso los datos de pago ahora. [ESCALAR]"
+PASO 2B — Lead dice sí a arrancar → escalar a Lili:
+"Qué bueno 🌿 En un momento te confirmo todos los detalles para arrancar. [ESCALAR]"
 
 PASO 2C — Lead pide otra medida ESTÁNDAR (solo 80, 100, 120, 140, 160) → da precio de ESA medida + pre-cierre:
-Ejemplo: dice "100cm" → "La de 100cm queda en $320.000 😊 Roble macizo, 15cm de profundidad, 3.6cm de espesor, herrajes invisibles, esquinas redondeadas, lista en 5-6 días con instalación incluida en Medellín. ¿Arrancamos con esa?"
+Ejemplo: dice "100cm" → "Perfecto 😊 La de 100cm es en roble macizo, 15cm de profundidad, 3.6cm de espesor, herrajes invisibles, esquinas redondeadas, lista en 5-6 días con instalación incluida en Medellín. Queda en $320.000. ¿Arrancamos con esa?"
 IMPORTANTE: Si pide una medida que NO está en la lista de 6 (ej: 70cm, 90cm, 110cm, 130cm) → NO inventes precio, escala: "Esa medida la fabricamos con gusto 😊 Permíteme un momento que te confirmo el valor exacto. [ESCALAR]"
 
-PASO 3 — Lead dice sí a arrancar con otra medida → proceso de pago + escalar:
-"Perfecto 🌿 Para arrancar: el 60% de anticipo inicia la producción, y el 40% restante lo pagas al momento de la entrega. Te paso los datos de pago ahora. [ESCALAR]"
+PASO 3 — Lead dice sí a arrancar con otra medida → escalar:
+"Qué bueno 🌿 En un momento te confirmo todos los detalles para arrancar. [ESCALAR]"
 
 PASO 4 — Si lead confirma → escalar a Lili para proceso de pago
 PASO 5 — Si lead pide medida mayor de 160cm o cualquier medida no listada → escalar para precio
@@ -505,6 +513,15 @@ REGLAS CONVERSION:
 4. Si cliente ya dio informacion, NO la repitas
 5. Despues de 1-2 intercambios das precio con contexto
 6. Productos mas de $2M: minimo 2-3 intercambios antes de precio
+7. EL PRECIO SIEMPRE AL FINAL DEL MENSAJE: cuando llegue el momento de dar un precio, primero van las características y beneficios del mueble, y el precio se menciona al FINAL, en la última parte del mensaje. NUNCA empieces un mensaje con el precio. Esto aplica a TODOS los productos, incluidas las repisas.
+   - ACLARACIÓN REPISAS: "precio al final" NO significa alargar la conversación ni hacer más preguntas. Las repisas son compra de impulso. Solo significa el ORDEN dentro del mismo mensaje: características primero, precio de cierre. Ejemplo correcto para una medida estándar: "La de 120cm es en roble macizo, 15x3.6cm, herrajes invisibles, esquinas redondeadas, instalación incluida en Medellín. Queda en $350.000. ¿Arrancamos?" — todo en UN mensaje, sin preguntas extra.
+   - ACLARACIÓN OTROS MUEBLES (escritorio, cama, recibidor, mesas): aquí SÍ va primero el enganche (preguntar dónde va, para qué espacio, si las medidas estándar le sirven) para generar interés, y el precio se da después de 1-2 intercambios, siempre con las características antes y el precio al final.
+
+MÉTODO DE PAGO (cuando el cliente pregunta cómo paga, formas de pago, si hay anticipo, etc.):
+- El pago es por transferencia bancaria.
+- Se trabaja con un anticipo del 60% para arrancar el pedido, y el 40% restante se paga al momento de la entrega (o antes del envío, en caso de otra ciudad).
+- Responde con naturalidad, ejemplo: "El pago es por transferencia 😊 Se arranca con un anticipo del 60% y el 40% restante al momento de la entrega. Así reservas tu pieza y empezamos a fabricarla 🌿"
+- NUNCA inventes otros métodos de pago (no menciones tarjetas, links de pago, contraentrega, ni nada que no sea transferencia bancaria con el esquema 60/40). Si el cliente insiste en otro método, escala: "Déjame confirmarte esa opción de pago 😊 [ESCALAR]"
 
 DETECCIÓN DE PRODUCTO EN CUALQUIER MENSAJE:
 Si en CUALQUIER momento de la conversación el lead menciona "repisa", "repisas", "estante", "estantes", "shelf", activa INMEDIATAMENTE el flujo de repisas — sin importar en qué punto va la conversación, sin importar si ya diste el saludo genérico.
@@ -677,7 +694,12 @@ function estadoLegible(numero) {
 app.get('/panel', function(req, res) {
   if (req.query.token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
   var leads = Object.keys(conversaciones).filter(function(n) { return n !== LILI_NUMERO; });
-  leads.reverse();
+  // Ordenar por última actividad: el lead con quien se habló más recientemente queda arriba
+  leads.sort(function(a, b) {
+    var ta = ultimaActividad[a] || 0;
+    var tb = ultimaActividad[b] || 0;
+    return tb - ta;
+  });
 
   var html = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
   html += '<title>Panel — Hecho por Lili</title><style>';
@@ -823,6 +845,8 @@ app.post('/panel/enviar', function(req, res) {
   res.json({ ok: true });
 });
 
+// Endpoint para marcar un estado de seguimiento desde el panel
+// (cuando Lili envía fotos/cotización/referencias por fuera y quiere avisarle al agente)
 app.post('/panel/marcar', function(req, res) {
   if (req.body.token !== CONTROL_TOKEN) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
@@ -830,6 +854,7 @@ app.post('/panel/marcar', function(req, res) {
   var estadosValidos = ['esperando_info', 'esperando_decision', 'cotizacion_enviada'];
   if (!numero || estadosValidos.indexOf(estado) === -1) return res.json({ ok: false });
 
+  // Activar el seguimiento con el estado indicado (resetea timer e intentos)
   seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0 };
   guardarSeguimiento(numero);
   console.log('Estado marcado desde panel para ' + numero + ': ' + estado);
@@ -888,6 +913,9 @@ app.post('/webhook', function(req, res) {
         var texto = message.text.body;
         console.log('Mensaje de ' + from + ': ' + texto);
 
+        // GUARDAR SIEMPRE el mensaje del lead en la BD, aunque esté pausado.
+        // Así Lili ve todas las respuestas en el panel para hacer seguimiento.
+        // La pausa solo evita que el AGENTE responda solo — no que se registre el mensaje.
         if (!conversaciones[from]) conversaciones[from] = [];
         conversaciones[from].push({ role: 'user', content: texto });
         if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
@@ -915,6 +943,8 @@ app.post('/webhook', function(req, res) {
 });
 
 function procesarMensaje(from, texto) {
+  // El mensaje del lead ya fue agregado al historial y guardado en el webhook.
+  // Aquí solo generamos la respuesta del agente.
   if (!conversaciones[from]) conversaciones[from] = [];
 
   axios.post(
@@ -962,6 +992,7 @@ function enviarMensaje(to, texto) {
   });
 }
 
+// Arrancar: primero conectar a la BD, luego levantar el servidor
 inicializarBD().then(function() {
   app.listen(PORT, function() {
     console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
