@@ -28,6 +28,7 @@ const pool = new Pool({
 const conversaciones = {};
 const pausados = {};
 const seguimientos = {};
+const notas = {}; // notas personales de Lili por lead (rastro de lo hablado por audio/fuera del sistema)
 const ultimaActividad = {}; // timestamp del último mensaje por lead, para ordenar el panel
 const procesando = {}; // evita procesar dos mensajes del mismo numero a la vez
 let pausadoTodo = false;
@@ -40,6 +41,7 @@ async function inicializarBD() {
     await pool.query('CREATE TABLE IF NOT EXISTS pausados (numero TEXT PRIMARY KEY)');
     await pool.query('CREATE TABLE IF NOT EXISTS seguimientos (numero TEXT PRIMARY KEY, estado TEXT NOT NULL, timestamp BIGINT NOT NULL, intentos INT NOT NULL DEFAULT 0, ultimo_mensaje_lead BIGINT)');
     await pool.query('CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)');
+    await pool.query('CREATE TABLE IF NOT EXISTS notas (numero TEXT PRIMARY KEY, nota TEXT)');
 
     var rc = await pool.query('SELECT numero, mensajes FROM conversaciones');
     var baseT = Date.now();
@@ -65,6 +67,9 @@ async function inicializarBD() {
 
     var ra = await pool.query("SELECT valor FROM ajustes WHERE clave = 'pausadoTodo'");
     if (ra.rows.length > 0) pausadoTodo = ra.rows[0].valor === 'true';
+
+    var rn = await pool.query('SELECT numero, nota FROM notas');
+    rn.rows.forEach(function(row) { if (row.nota) notas[row.numero] = row.nota; });
 
     bdLista = true;
     console.log('BD lista: ' + rc.rows.length + ' conversaciones, ' + rp.rows.length + ' pausados, ' + rs.rows.length + ' seguimientos');
@@ -121,6 +126,14 @@ function guardarPausadoTodo() {
     "INSERT INTO ajustes (clave, valor) VALUES ('pausadoTodo', $1) ON CONFLICT (clave) DO UPDATE SET valor = $1",
     [pausadoTodo ? 'true' : 'false']
   ).catch(function(e) { console.error('Error guardando pausadoTodo:', e.message); });
+}
+
+function guardarNota(numero) {
+  var nota = notas[numero] || '';
+  pool.query(
+    'INSERT INTO notas (numero, nota) VALUES ($1, $2) ON CONFLICT (numero) DO UPDATE SET nota = $2',
+    [numero, nota]
+  ).catch(function(e) { console.error('Error guardando nota ' + numero + ':', e.message); });
 }
 // ─── FIN PERSISTENCIA ──────────────────────────────────────────────────────
 
@@ -390,6 +403,14 @@ REGLA MAESTRA DE INSTALACIÓN Y ENVÍO (CRÍTICA — APLICA A TODOS LOS PRODUCTO
   • Cama → requiere instalación (la instala Lili). Solo Medellín, sin envío a otras ciudades.
 
 CATALOGO COMPLETO:
+
+⛔ REGLA MAESTRA DE PRECIOS (LA MÁS IMPORTANTE — NUNCA LA ROMPAS):
+- SOLO puedes dar los precios EXACTOS que están escritos en este catálogo, y SOLO para la medida estándar exacta de cada mueble (o las 6 medidas exactas de repisas).
+- Si el cliente pide CUALQUIER medida distinta a la estándar (más grande, más pequeña, personalizada), NUNCA calcules, estimes, "proporciones" ni inventes un precio. El precio de una medida personalizada NO lo sabes — solo Lili lo sabe.
+- En medidas personalizadas SIEMPRE escalas con algo como: "Esa medida la hacemos con gusto 😊 Ya te confirmo el valor exacto y te lo paso. [ESCALAR]"
+- Ejemplo de error GRAVE que NUNCA debes cometer: el escritorio flotante de 75cm vale $1.590.000; si piden uno de 100cm, NO digas "$1.890.000" ni ningún número — ESCALA. El precio del de 100cm NO está en tu información.
+- Es mil veces mejor escalar y que Lili dé el precio, que inventar un número equivocado. Inventar un precio es el peor error que puedes cometer.
+
 
 1. ESCRITORIO FLOTANTE (producto estrella)
 - Medidas estandar: 75 x 46.5 x 15 cm
@@ -701,28 +722,69 @@ app.get('/panel', function(req, res) {
     return tb - ta;
   });
 
+  // Separar en dos grupos:
+  // "Atendiendo yo" = leads pausados que NO están cerrados (Lili los está manejando)
+  // "Olivia maneja" = el resto
+  var mios = [];
+  var deOlivia = [];
+  leads.forEach(function(n) {
+    var seg = seguimientos[n];
+    var cerrado = seg && (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido');
+    if (pausados[n] && !cerrado) {
+      mios.push(n);
+    } else {
+      deOlivia.push(n);
+    }
+  });
+
+  function tarjetaLead(n) {
+    var h = '<a class="lead" href="/panel/chat?token=' + CONTROL_TOKEN + '&numero=' + n + '">';
+    h += '<div class="num">+' + n + '</div>';
+    h += '<div class="est">' + estadoLegible(n) + '</div>';
+    if (notas[n]) {
+      h += '<div class="nota-prev">📝 ' + escapeHtml(notas[n]) + '</div>';
+    }
+    h += '</a>';
+    return h;
+  }
+
+  function listaGrupo(arr) {
+    if (arr.length === 0) return '<div class="vacio">No hay leads en este grupo.</div>';
+    return arr.map(tarjetaLead).join('');
+  }
+
   var html = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
   html += '<title>Panel — Hecho por Lili</title><style>';
   html += 'body{font-family:-apple-system,sans-serif;background:#f5f3ef;margin:0;padding:16px;color:#3a342e}';
-  html += 'h1{font-size:20px;margin-bottom:4px}.sub{color:#7a7268;font-size:13px;margin-bottom:18px}';
+  html += 'h1{font-size:20px;margin-bottom:12px}';
+  html += '.tabs{display:flex;gap:8px;margin-bottom:16px}';
+  html += '.tab{flex:1;text-align:center;padding:12px 8px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;background:#e8e3db;color:#7a7268;border:none}';
+  html += '.tab.activa{background:#3a342e;color:#fff}';
   html += '.lead{display:block;background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:10px;text-decoration:none;color:#3a342e;box-shadow:0 1px 3px rgba(0,0,0,.06)}';
   html += '.num{font-family:monospace;font-size:15px;font-weight:600}';
   html += '.est{font-size:13px;color:#7a7268;margin-top:4px}';
-  html += '.vacio{color:#aaa;font-style:italic}';
+  html += '.nota-prev{font-size:12px;color:#4a7c4e;margin-top:6px;background:#f0f5ee;padding:6px 8px;border-radius:6px}';
+  html += '.vacio{color:#aaa;font-style:italic;padding:10px 0}';
+  html += '.grupo{display:none}.grupo.activo{display:block}';
   html += '</style></head><body>';
   html += '<h1>🌿 Panel de Conversaciones</h1>';
-  html += '<div class="sub">' + leads.length + ' leads · toca uno para ver la conversación</div>';
 
-  if (leads.length === 0) {
-    html += '<div class="vacio">No hay conversaciones registradas todavía.</div>';
-  } else {
-    leads.forEach(function(n) {
-      html += '<a class="lead" href="/panel/chat?token=' + CONTROL_TOKEN + '&numero=' + n + '">';
-      html += '<div class="num">+' + n + '</div>';
-      html += '<div class="est">' + estadoLegible(n) + '</div>';
-      html += '</a>';
-    });
-  }
+  html += '<div class="tabs">';
+  html += '<button class="tab activa" id="tab-mios" onclick="verGrupo(\'mios\')">🔵 Atendiendo yo (' + mios.length + ')</button>';
+  html += '<button class="tab" id="tab-olivia" onclick="verGrupo(\'olivia\')">🟢 Olivia maneja (' + deOlivia.length + ')</button>';
+  html += '</div>';
+
+  html += '<div class="grupo activo" id="grupo-mios">' + listaGrupo(mios) + '</div>';
+  html += '<div class="grupo" id="grupo-olivia">' + listaGrupo(deOlivia) + '</div>';
+
+  html += '<script>';
+  html += 'function verGrupo(g){';
+  html += 'document.getElementById("grupo-mios").className = g==="mios" ? "grupo activo" : "grupo";';
+  html += 'document.getElementById("grupo-olivia").className = g==="olivia" ? "grupo activo" : "grupo";';
+  html += 'document.getElementById("tab-mios").className = g==="mios" ? "tab activa" : "tab";';
+  html += 'document.getElementById("tab-olivia").className = g==="olivia" ? "tab activa" : "tab";';
+  html += '}';
+  html += '</script>';
   html += '</body></html>';
   res.send(html);
 });
@@ -758,6 +820,8 @@ app.get('/panel/chat', function(req, res) {
   html += '.btn-cerrar{flex:1;border:none;border-radius:8px;padding:10px 4px;font-size:12px;font-weight:600;cursor:pointer;color:#fff}';
   html += '.btn-venta{background:#4a7c4e}';
   html += '.btn-perdido{background:#a85a4a}';
+  html += '.nota-input{width:100%;box-sizing:border-box;border:1px solid #cdbfae;border-radius:8px;padding:9px;font-size:14px;font-family:inherit;resize:vertical;min-height:50px;margin-bottom:6px}';
+  html += '.btn-nota{width:100%;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;background:#4a7c4e;color:#fff}';
   html += '.aviso{font-size:12px;color:#7a7268;text-align:center;margin-top:6px}';
   html += '</style></head><body>';
   html += '<div class="top"><a href="/panel?token=' + CONTROL_TOKEN + '">← Volver a leads</a>';
@@ -798,6 +862,9 @@ app.get('/panel/chat', function(req, res) {
   html += '<button class="btn-cerrar btn-venta" onclick="cerrar(\'cerrado_venta\',event)">✅ Venta cerrada</button>';
   html += '<button class="btn-cerrar btn-perdido" onclick="cerrar(\'cerrado_perdido\',event)">❌ No va a comprar</button>';
   html += '</div>';
+  html += '<div class="marcar-titulo">📝 Nota privada (lo que hablaste por audio, qué esperas, etc.):</div>';
+  html += '<textarea id="nota" class="nota-input" placeholder="Ej: Quedó de mandar fotos del material el viernes...">' + escapeHtml(notas[numero] || '') + '</textarea>';
+  html += '<button class="btn-nota" onclick="guardarNota(event)">Guardar nota</button>';
   html += '</div>';
 
   html += '<script>';
@@ -822,6 +889,12 @@ app.get('/panel/chat', function(req, res) {
   html += '.then(function(){setTimeout(function(){location.reload()},700)})';
   html += '.catch(function(){alert("Error de conexion");b.disabled=false;});}';
   html += 'window.scrollTo(0, document.body.scrollHeight);';
+  html += 'function guardarNota(e){';
+  html += 'var t=document.getElementById("nota").value;';
+  html += 'var b=e.target;b.disabled=true;b.textContent="Guardando...";';
+  html += 'fetch("/panel/nota",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK,numero:NUM,nota:t})})';
+  html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){b.textContent="✓ Nota guardada";setTimeout(function(){b.disabled=false;b.textContent="Guardar nota"},1500)}else{alert("Error");b.disabled=false;b.textContent="Guardar nota"}})';
+  html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="Guardar nota"});}';
   html += '</script>';
   html += '</body></html>';
   res.send(html);
@@ -858,6 +931,18 @@ app.post('/panel/marcar', function(req, res) {
   seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0 };
   guardarSeguimiento(numero);
   console.log('Estado marcado desde panel para ' + numero + ': ' + estado);
+  res.json({ ok: true });
+});
+
+// Endpoint para guardar la nota privada de un lead
+app.post('/panel/nota', function(req, res) {
+  if (req.body.token !== CONTROL_TOKEN) return res.status(403).json({ ok: false });
+  var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
+  if (!numero) return res.json({ ok: false });
+  var nota = (req.body.nota || '').slice(0, 1000); // límite de seguridad
+  if (nota.trim() === '') { delete notas[numero]; } else { notas[numero] = nota; }
+  guardarNota(numero);
+  console.log('Nota guardada para ' + numero);
   res.json({ ok: true });
 });
 
