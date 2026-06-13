@@ -802,7 +802,7 @@ app.get('/panel/chat', function(req, res) {
   html += '.top a{display:inline-block;color:#fff;background:rgba(255,255,255,.15);text-decoration:none;font-size:15px;padding:8px 14px;border-radius:8px;margin-bottom:10px}';
   html += '.top .n{font-family:monospace;font-size:16px;font-weight:600;margin-top:2px}';
   html += '.est{font-size:12px;color:#cdbfae;margin-top:2px}';
-  html += '.wrap{padding:16px;padding-bottom:380px}';
+  html += '.wrap{padding:16px;padding-bottom:140px}';
   html += '.msg{max-width:78%;padding:9px 13px;border-radius:12px;margin-bottom:8px;font-size:15px;line-height:1.35;white-space:pre-wrap;word-wrap:break-word}';
   html += '.lead{background:#fff;align-self:flex-start;margin-right:auto}';
   html += '.lili{background:#d9fdd3;margin-left:auto}';
@@ -822,6 +822,10 @@ app.get('/panel/chat', function(req, res) {
   html += '.btn-perdido{background:#a85a4a}';
   html += '.nota-input{width:100%;box-sizing:border-box;border:1px solid #cdbfae;border-radius:8px;padding:9px;font-size:14px;font-family:inherit;resize:vertical;min-height:50px;margin-bottom:6px}';
   html += '.btn-nota{width:100%;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;background:#4a7c4e;color:#fff}';
+  html += '.acciones-panel{display:none;max-height:55vh;overflow-y:auto;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #cdbfae}';
+  html += '.acciones-panel.abierto{display:block}';
+  html += '.btn-acciones{background:#8a7f70;color:#fff}';
+  html += '.btn-accion-full{width:100%;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:4px}';
   html += '.aviso{font-size:12px;color:#7a7268;text-align:center;margin-top:6px}';
   html += '</style></head><body>';
   html += '<div class="top"><a href="/panel?token=' + CONTROL_TOKEN + '">← Volver a leads</a>';
@@ -841,16 +845,15 @@ app.get('/panel/chat', function(req, res) {
 
   var estaPausado = pausados[numero] ? true : false;
   html += '<div class="barra">';
-  html += '<textarea id="txt" placeholder="Escribe tu respuesta..."></textarea>';
-  html += '<div class="fila">';
-  html += '<button class="btn btn-enviar" onclick="enviar(event)">Enviar</button>';
-  if (estaPausado) {
-    html += '<button class="btn btn-agente" onclick="agente(\'reanudar\')">▶️ Activar agente</button>';
-  } else {
-    html += '<button class="btn btn-agente" onclick="agente(\'pausa\')">⏸️ Pausar agente</button>';
-  }
-  html += '</div>';
+
+  // Panel de acciones desplegable (arranca oculto)
+  html += '<div id="acciones" class="acciones-panel">';
   html += '<div class="aviso">' + (estaPausado ? 'El agente está pausado — tú atiendes este lead' : 'El agente está activo en este lead') + '</div>';
+  if (estaPausado) {
+    html += '<button class="btn-accion-full btn-agente" onclick="agente(\'reanudar\')">▶️ Activar agente Olivia</button>';
+  } else {
+    html += '<button class="btn-accion-full btn-agente" onclick="agente(\'pausa\')">⏸️ Pausar agente (atiendo yo)</button>';
+  }
   html += '<div class="marcar-titulo">Avisarle al agente que ya enviaste (por WhatsApp):</div>';
   html += '<div class="fila-marcar">';
   html += '<button class="btn-marcar" onclick="marcar(\'esperando_decision\',event)">📸 Fotos enviadas</button>';
@@ -865,6 +868,14 @@ app.get('/panel/chat', function(req, res) {
   html += '<div class="marcar-titulo">📝 Nota privada (lo que hablaste por audio, qué esperas, etc.):</div>';
   html += '<textarea id="nota" class="nota-input" placeholder="Ej: Quedó de mandar fotos del material el viernes...">' + escapeHtml(notas[numero] || '') + '</textarea>';
   html += '<button class="btn-nota" onclick="guardarNota(event)">Guardar nota</button>';
+  html += '</div>';
+
+  // Fila fija esencial: texto + Enviar + Acciones
+  html += '<textarea id="txt" placeholder="Escribe tu respuesta..."></textarea>';
+  html += '<div class="fila">';
+  html += '<button class="btn btn-enviar" onclick="enviar(event)">Enviar</button>';
+  html += '<button class="btn btn-acciones" onclick="toggleAcciones()">⚙️ Acciones</button>';
+  html += '</div>';
   html += '</div>';
 
   html += '<script>';
@@ -889,6 +900,10 @@ app.get('/panel/chat', function(req, res) {
   html += '.then(function(){setTimeout(function(){location.reload()},700)})';
   html += '.catch(function(){alert("Error de conexion");b.disabled=false;});}';
   html += 'window.scrollTo(0, document.body.scrollHeight);';
+  html += 'function toggleAcciones(){';
+  html += 'var p=document.getElementById("acciones");';
+  html += 'p.className = p.className.indexOf("abierto")===-1 ? "acciones-panel abierto" : "acciones-panel";';
+  html += '}';
   html += 'function guardarNota(e){';
   html += 'var t=document.getElementById("nota").value;';
   html += 'var b=e.target;b.disabled=true;b.textContent="Guardando...";';
