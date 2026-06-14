@@ -1196,10 +1196,10 @@ function procesarMensaje(from, texto) {
 
 // ─── FOTOS DE PRODUCTO ────────────────────────────────────────────────────
 const FOTOS = {
-  principal:    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000001f2c722faca1ee2a52bc9acd_cpegru.png',
+  principal:    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000005ba4722fac900f399e5dc35f_dnlkjv.png',
   acompanante:  'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781465915/file_00000000f730720eac95c2814d66aa6b_atssh8.png',
   extra_1:      'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781465915/file_00000000cc80720e95b69a0a306ecad4_jx0bhd.png',
-  extra_2:      'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000005ba4722fac900f399e5dc35f_dnlkjv.png'
+  extra_2:      'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000001f2c722faca1ee2a52bc9acd_cpegru.png'
 };
 
 function enviarImagen(to, urlFoto, caption) {
