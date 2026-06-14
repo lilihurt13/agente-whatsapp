@@ -360,9 +360,14 @@ PERSONALIDAD Y TONO:
 - ENVÍO DE REPISAS A OTRAS CIUDADES: SÍ se envía a otras ciudades. NO hay instalación fuera de Medellín, pero la repisa es flotante y va con sus soportes para que el cliente la instale. NUNCA digas que vas a revisar si consigues instalador — no hay instaladores fuera de Medellín. Valores de envío más abajo en la sección de repisas.
 
 SALUDO INICIAL (SOLO primer mensaje de cada persona nueva):
-¡Hola! 👋 Qué gusto que nos escribas.
-Soy Olivia, del equipo de Hecho por Lili. Hacemos muebles en roble natural para espacios que realmente funcionen y se vean increíbles 🌿
-¿En qué te puedo ayudar? ¿Buscas algo específico para tu hogar? 😊
+Primero se envían automáticamente DOS fotos del producto (esto lo hace el sistema, no lo escribas en el mensaje).
+Luego envías este texto EXACTO:
+
+"¡Hola! 👋 Soy Olivia, del equipo de Hecho por Lili 🌿
+
+Hacemos repisas flotantes en roble natural — herrajes invisibles, esquinas redondeadas, bordes suaves e instalación incluida en Medellín. La de 60cm queda en $220.000.
+
+¿Esta medida te funciona o necesitas otra? Cuéntame el espacio y te doy el valor exacto 😊"
 
 REGLA CRÍTICA — CONTINUIDAD DE CONVERSACIÓN:
 Si ya hay mensajes previos en el historial con este número, NUNCA vuelvas a saludar como si fuera la primera vez. NUNCA digas "Hola, soy Olivia..." de nuevo.
@@ -485,18 +490,17 @@ Las repisas son compra de impulso. El precio ya viene filtrado desde el anuncio.
 FLUJO OBLIGATORIO PARA REPISAS — SIGUE ESTE ORDEN SIEMPRE:
 
 PASO 1 — Saludo + ancla en 60cm + pregunta medida:
-Cuando llegue cualquier lead de repisa (sin importar cómo pregunte), responde SIEMPRE con este mensaje EXACTO — no lo cambies, no lo alargues, no agregues nada, no importa lo que diga el lead:
+Cuando llegue cualquier lead de repisa (sin importar cómo pregunte), el sistema envía automáticamente DOS fotos del producto, y luego tú respondes SIEMPRE con este mensaje EXACTO:
 
 "¡Hola! 👋 Soy Olivia, del equipo de Hecho por Lili 🌿
 
-Nuestra repisa flotante de 60cm es en roble macizo — instalación flotante, 15cm de profundidad, 3.6cm de espesor, herrajes invisibles, esquinas redondeadas y bordes suaves. Instalación incluida en Medellín. Queda en $220.000.
+Hacemos repisas flotantes en roble natural — herrajes invisibles, esquinas redondeadas, bordes suaves e instalación incluida en Medellín. La de 60cm queda en $220.000.
 
-¿Esta medida funciona para ti o buscas otra? 😊"
+¿Esta medida te funciona o necesitas otra? Cuéntame el espacio y te doy el valor exacto 😊"
 
 NUNCA menciones el uso específico (TV, baño, sala, etc.) en este primer mensaje.
 NUNCA listes otras medidas en este primer mensaje.
 NUNCA alargues este mensaje con más información.
-NUNCA des la lista completa de precios aunque el lead pida "precio y medidas" o "todas las opciones" — el flujo siempre empieza por la de 60cm.
 
 PASO 2 — Lead confirma la de 60cm → pre-cierre:
 Si el lead dice que sí le sirve la de 60cm, responde:
@@ -662,7 +666,8 @@ PARA LA CAMA:
 
 CUANDO ESCALAR (respuestas naturales y cálidas. Como Olivia es del equipo, SÍ puede referirse a Lili con naturalidad, ej: "ya le aviso a Lili"):
 - CLIENTE PIDE HABLAR CON UNA PERSONA O ASESOR: Si el cliente dice cosas como "quiero hablar con un asesor", "quiero hablar con una persona", "con un humano", "con alguien real", "con Lili", "me pueden llamar", "necesito hablar con alguien", o muestra frustración con tus respuestas, escala de inmediato con calidez: "¡Claro! Ya le aviso a Lili para que te atienda personalmente 😊 En un momentico te escribe. [ESCALAR]"
-- Fotos o imagenes: "Claro! En el transcurso del dia te mando las fotos 😊 [ESCALAR]"
+- Fotos de la REPISA (cómo es, cómo queda, cómo se ve): el sistema las envía automáticamente. Responde: "¡Claro! Aquí te muestro cómo queda 😊 [FOTOS_EXTRA]" — el sistema enviará las fotos adicionales automáticamente.
+- Fotos de REFERENCIA o ESTILO (para elegir diseño, estilo, color): "Claro! En el transcurso del día te paso algunas opciones de referencia para que elijas el estilo 😊 [ESCALAR]"
 - Medidas no estandar: "Perfecto! Ya reviso las medidas y en cuanto tenga el valor te lo paso 😊 [ESCALAR]"
 - Diseno personalizado: "Claro! En el transcurso del dia te paso opciones de referencia 😊 [ESCALAR]"
 - Envio cama o mesa: "Para ese detalle de envio lo reviso bien y te confirmo en cuanto pueda 😊 [ESCALAR]"
@@ -1136,6 +1141,9 @@ function procesarMensaje(from, texto) {
   // Aquí solo generamos la respuesta del agente.
   if (!conversaciones[from]) conversaciones[from] = [];
 
+  // Detectar si es el primer mensaje (saludo inicial) para mandar fotos primero
+  var esPrimerMensaje = conversaciones[from].filter(function(m) { return m.role === 'assistant'; }).length === 0;
+
   axios.post(
     'https://api.anthropic.com/v1/messages',
     { model: 'claude-haiku-4-5', max_tokens: 600, system: SYSTEM_PROMPT, messages: conversaciones[from] },
@@ -1147,7 +1155,8 @@ function procesarMensaje(from, texto) {
     guardarConversacion(from);
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
-    var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').trim();
+    var necesitaFotosExtra = respuesta.indexOf('[FOTOS_EXTRA]') !== -1;
+    var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').replace(/\[FOTOS_EXTRA\]/g, '').trim();
 
     if (necesitaEscalar) {
       notificarLili(from, texto.substring(0, 100));
@@ -1160,7 +1169,23 @@ function procesarMensaje(from, texto) {
       }
     }
 
-    enviarMensaje(from, textoLimpio);
+    // Si es el primer mensaje: fotos primero, luego el texto del saludo
+    if (esPrimerMensaje) {
+      enviarFotosSaludo(from)
+        .then(function() {
+          return new Promise(function(resolve) { setTimeout(resolve, 1000); });
+        })
+        .then(function() {
+          enviarMensaje(from, textoLimpio);
+        });
+    } else if (necesitaFotosExtra) {
+      // Si Olivia detectó que piden más fotos: texto primero, luego las fotos extra
+      enviarMensaje(from, textoLimpio);
+      setTimeout(function() { enviarFotosExtra(from); }, 1500);
+    } else {
+      enviarMensaje(from, textoLimpio);
+    }
+
     delete procesando[from];
   }).catch(function(error) {
     console.error('Error Claude:', error.response ? JSON.stringify(error.response.data) : error.message);
@@ -1168,6 +1193,56 @@ function procesarMensaje(from, texto) {
     enviarMensaje(from, 'Hola! 🙌 Estoy revisando tu mensaje, en un momento te respondo 😊');
   });
 }
+
+// ─── FOTOS DE PRODUCTO ────────────────────────────────────────────────────
+const FOTOS = {
+  principal:    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000001f2c722faca1ee2a52bc9acd_cpegru.png',
+  acompanante:  'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781465915/file_00000000f730720eac95c2814d66aa6b_atssh8.png',
+  extra_1:      'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781465915/file_00000000cc80720e95b69a0a306ecad4_jx0bhd.png',
+  extra_2:      'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000005ba4722fac900f399e5dc35f_dnlkjv.png'
+};
+
+function enviarImagen(to, urlFoto, caption) {
+  var body = {
+    messaging_product: 'whatsapp',
+    to: to,
+    type: 'image',
+    image: { link: urlFoto }
+  };
+  if (caption) body.image.caption = caption;
+  return axios.post(
+    'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
+    body,
+    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
+  ).then(function() {
+    console.log('Imagen enviada a ' + to + ': ' + urlFoto);
+  }).catch(function(error) {
+    console.error('Error imagen:', error.response ? JSON.stringify(error.response.data) : error.message);
+  });
+}
+
+// Envía las dos fotos del saludo en secuencia (principal + acompañante)
+function enviarFotosSaludo(to) {
+  return enviarImagen(to, FOTOS.principal)
+    .then(function() {
+      return new Promise(function(resolve) { setTimeout(resolve, 1500); });
+    })
+    .then(function() {
+      return enviarImagen(to, FOTOS.acompanante);
+    });
+}
+
+// Envía fotos extra cuando el lead pide más imágenes
+function enviarFotosExtra(to) {
+  return enviarImagen(to, FOTOS.extra_1)
+    .then(function() {
+      return new Promise(function(resolve) { setTimeout(resolve, 1500); });
+    })
+    .then(function() {
+      return enviarImagen(to, FOTOS.extra_2);
+    });
+}
+// ─── FIN FOTOS ─────────────────────────────────────────────────────────────
 
 function enviarMensaje(to, texto) {
   return axios.post(
