@@ -666,7 +666,7 @@ PARA LA CAMA:
 
 CUANDO ESCALAR (respuestas naturales y cálidas. Como Olivia es del equipo, SÍ puede referirse a Lili con naturalidad, ej: "ya le aviso a Lili"):
 - CLIENTE PIDE HABLAR CON UNA PERSONA O ASESOR: Si el cliente dice cosas como "quiero hablar con un asesor", "quiero hablar con una persona", "con un humano", "con alguien real", "con Lili", "me pueden llamar", "necesito hablar con alguien", o muestra frustración con tus respuestas, escala de inmediato con calidez: "¡Claro! Ya le aviso a Lili para que te atienda personalmente 😊 En un momentico te escribe. [ESCALAR]"
-- Fotos de la REPISA (cómo es, cómo queda, cómo se ve): el sistema las envía automáticamente. Responde: "¡Claro! Aquí te muestro cómo queda 😊 [FOTOS_EXTRA]" — el sistema enviará las fotos adicionales automáticamente.
+- Fotos de la REPISA (cómo es, cómo queda, cómo se ve): el sistema las envía automáticamente. Debes responder EXACTAMENTE así, sin cambiar nada: "¡Claro! Aquí te muestro cómo queda 😊 [FOTOS_EXTRA]" — el tag [FOTOS_EXTRA] es OBLIGATORIO, sin él las fotos no se envían. NUNCA escribas esta respuesta sin el tag.
 - Fotos de REFERENCIA o ESTILO (para elegir diseño, estilo, color): "Claro! En el transcurso del día te paso algunas opciones de referencia para que elijas el estilo 😊 [ESCALAR]"
 - Medidas no estandar: "Perfecto! Ya reviso las medidas y en cuanto tenga el valor te lo paso 😊 [ESCALAR]"
 - Diseno personalizado: "Claro! En el transcurso del dia te paso opciones de referencia 😊 [ESCALAR]"
@@ -1156,6 +1156,16 @@ function procesarMensaje(from, texto) {
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
     var necesitaFotosExtra = respuesta.indexOf('[FOTOS_EXTRA]') !== -1;
+    // Respaldo: detectar por palabras clave del lead en caso de que Olivia olvide el tag
+    if (!necesitaFotosExtra && !necesitaEscalar) {
+      var textoLead = texto.toLowerCase();
+      var pideFotos = textoLead.indexOf('foto') !== -1 || textoLead.indexOf('imagen') !== -1 ||
+                      textoLead.indexOf('como queda') !== -1 || textoLead.indexOf('cómo queda') !== -1 ||
+                      textoLead.indexOf('como se ve') !== -1 || textoLead.indexOf('cómo se ve') !== -1 ||
+                      textoLead.indexOf('muéstrame') !== -1 || textoLead.indexOf('muestrame') !== -1 ||
+                      textoLead.indexOf('ver la repisa') !== -1;
+      if (pideFotos) necesitaFotosExtra = true;
+    }
     var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').replace(/\[FOTOS_EXTRA\]/g, '').trim();
 
     if (necesitaEscalar) {
@@ -1177,16 +1187,17 @@ function procesarMensaje(from, texto) {
         })
         .then(function() {
           enviarMensaje(from, textoLimpio);
+          delete procesando[from];
         });
     } else if (necesitaFotosExtra) {
       // Si Olivia detectó que piden más fotos: texto primero, luego las fotos extra
       enviarMensaje(from, textoLimpio);
       setTimeout(function() { enviarFotosExtra(from); }, 1500);
+      delete procesando[from];
     } else {
       enviarMensaje(from, textoLimpio);
+      delete procesando[from];
     }
-
-    delete procesando[from];
   }).catch(function(error) {
     console.error('Error Claude:', error.response ? JSON.stringify(error.response.data) : error.message);
     delete procesando[from];
