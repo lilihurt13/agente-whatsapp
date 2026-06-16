@@ -369,7 +369,10 @@ Hacemos repisas flotantes en roble natural — herrajes invisibles, esquinas red
 
 ¿Esta medida te funciona o necesitas otra? Cuéntame el espacio y te doy el valor exacto 😊"
 
-REGLA CRÍTICA — CONTINUIDAD DE CONVERSACIÓN:
+REGLA CRÍTICA — CUANDO EL CLIENTE ENVÍA UNA IMAGEN O FOTO:
+Si ves en el historial "[El cliente envió una imagen]", significa que el lead mandó una foto (puede ser un mueble que quiere cotizar, una foto de su espacio, una referencia, etc.). Tú no puedes ver la imagen, pero debes responder con calidez y escalar para que Lili la vea:
+"¡Gracias por la foto! 😊 Ya le aviso a Lili para que la revise y te dé todos los detalles. En un momentico te escribe. [ESCALAR]"
+NUNCA ignores una imagen ni respondas como si no hubiera pasado nada.
 Si ya hay mensajes previos en el historial con este número, NUNCA vuelvas a saludar como si fuera la primera vez. NUNCA digas "Hola, soy Olivia..." de nuevo.
 Lee el historial, entiende en qué punto iba la conversación y continúa naturalmente desde ahí.
 Ejemplos:
@@ -1136,6 +1139,24 @@ app.post('/webhook', function(req, res) {
         procesando[from] = true;
         setTimeout(function() { procesarMensaje(from, texto); }, 500);
       }
+
+      // Manejo de mensajes de imagen/video/audio — Olivia no puede verlos pero responde
+      if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document')) {
+        var fromMedia = message.from;
+        console.log('Mensaje tipo ' + message.type + ' de ' + fromMedia + ' — respondiendo con texto');
+
+        if (pausadoTodo || pausados[fromMedia] || procesando[fromMedia]) return;
+
+        // Guardar referencia en historial para que Olivia sepa que hubo un archivo
+        var textoMedia = '[El cliente envió ' + (message.type === 'image' ? 'una imagen' : message.type === 'audio' ? 'un audio' : 'un archivo') + ']';
+        if (!conversaciones[fromMedia]) conversaciones[fromMedia] = [];
+        conversaciones[fromMedia].push({ role: 'user', content: textoMedia });
+        if (conversaciones[fromMedia].length > 12) conversaciones[fromMedia] = conversaciones[fromMedia].slice(-12);
+        guardarConversacion(fromMedia);
+
+        procesando[fromMedia] = true;
+        setTimeout(function() { procesarMensaje(fromMedia, textoMedia); }, 500);
+      }
     }
   } catch (error) {
     console.error('Error webhook:', error.message);
@@ -1148,7 +1169,11 @@ function procesarMensaje(from, texto) {
   if (!conversaciones[from]) conversaciones[from] = [];
 
   // Detectar si es el primer mensaje (saludo inicial) para mandar fotos primero
-  var esPrimerMensaje = conversaciones[from].filter(function(m) { return m.role === 'assistant'; }).length === 0;
+  // SOLO mandamos fotos si el lead menciona repisa en su primer mensaje
+  var sinRespuestasAgente = conversaciones[from].filter(function(m) { return m.role === 'assistant'; }).length === 0;
+  var textoLower = texto.toLowerCase();
+  var mencionaRepisa = textoLower.indexOf('repisa') !== -1 || textoLower.indexOf('estante') !== -1 || textoLower.indexOf('shelf') !== -1;
+  var esPrimerMensaje = sinRespuestasAgente && mencionaRepisa;
 
   axios.post(
     'https://api.anthropic.com/v1/messages',
