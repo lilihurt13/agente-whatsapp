@@ -267,7 +267,7 @@ setInterval(function() {
     var numero = numeros[i];
     var seg = seguimientos[numero];
 
-    if (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido') continue;
+    if (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido' || seg.estado === 'cerrado_sin_respuesta') continue;
     if (seg.estado === 'saludo_sin_respuesta') continue;
     if (pausadoTodo) continue;
 
@@ -297,7 +297,7 @@ setInterval(function() {
           console.log('Seguimiento enviado a ' + numero + ' (intento ' + seg.intentos + ', estado: ' + seg.estado + ')');
         }
       } else {
-        seguimientos[numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: seg.intentos };
+        seguimientos[numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: seg.intentos };
         guardarSeguimiento(numero);
         console.log('Lead cerrado silenciosamente (sin respuesta): ' + numero);
       }
@@ -340,7 +340,7 @@ setInterval(function() {
     if (horasDesde >= 3 && horasDesde <= 24) {
       candidatos.push({ numero: numero, seg: seg });
     } else if (horasDesde > 24) {
-      seguimientos[numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: seg.intentos };
+      seguimientos[numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: seg.intentos };
       guardarSeguimiento(numero);
       console.log('Lead fuera de ventana 24h, cerrado: ' + numero);
     }
@@ -358,7 +358,7 @@ setInterval(function() {
         guardarSeguimiento(c.numero);
         console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
       } else {
-        seguimientos[c.numero] = { estado: 'cerrado_perdido', timestamp: Date.now(), intentos: c.seg.intentos };
+        seguimientos[c.numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: c.seg.intentos };
         guardarSeguimiento(c.numero);
         console.log('Lead cerrado tras 2 reactivaciones: ' + c.numero);
       }
@@ -820,7 +820,7 @@ app.get('/reporte', function(req, res) {
 
   var cat = {
     en_conversacion: [], saludo_sin_respuesta: [], esperando_info: [],
-    esperando_decision: [], cotizacion_enviada: [], cerrado_venta: [], cerrado_perdido: []
+    esperando_decision: [], cotizacion_enviada: [], cerrado_sin_respuesta: [], cerrado_venta: [], cerrado_perdido: []
   };
 
   Object.keys(todos).forEach(function(n) {
@@ -837,8 +837,9 @@ app.get('/reporte', function(req, res) {
     esperando_info: '📏 Prometieron enviar medidas/fotos',
     esperando_decision: '🖼️ Esperando decisión (fotos enviadas)',
     cotizacion_enviada: '📋 Cotización enviada',
+    cerrado_sin_respuesta: '❄️ Sin respuesta — disponibles para reactivar',
     cerrado_venta: '✅ Venta cerrada',
-    cerrado_perdido: '❌ Perdidos / cerrados'
+    cerrado_perdido: '❌ Perdidos / cerrados (decisión tuya)'
   };
 
   var html = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
@@ -875,7 +876,8 @@ function estadoLegible(numero) {
     esperando_decision: '🖼️ Esperando decisión',
     cotizacion_enviada: '📋 Cotización enviada',
     cerrado_venta: '✅ Venta cerrada',
-    cerrado_perdido: '❌ Perdido / cerrado'
+    cerrado_perdido: '❌ Perdido / cerrado',
+    cerrado_sin_respuesta: '❄️ Sin respuesta — disponible para reactivar'
   };
   return map[seg.estado] || seg.estado;
 }
