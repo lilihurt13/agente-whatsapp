@@ -1226,14 +1226,6 @@ app.post('/webhook', function(req, res) {
         var texto = message.text.body;
         console.log('Mensaje de ' + from + ': ' + texto);
 
-        // PROTECCIÓN: si el mensaje viene del número de Lili, NUNCA debe
-        // activar el flujo de Olivia (ni escalar, ni pausarse). Esto puede
-        // pasar si Lili prueba el bot desde su propio número.
-        if (from === LILI_NUMERO) {
-          console.log('Mensaje de Lili detectado (numero propio) — Olivia no responde, no se pausa nada');
-          return;
-        }
-
         if (!conversaciones[from]) conversaciones[from] = [];
         conversaciones[from].push({ role: 'user', content: texto });
         if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
