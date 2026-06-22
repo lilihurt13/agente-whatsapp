@@ -159,6 +159,24 @@ function guardarNota(numero) {
   ).catch(function(e) { console.error('Error guardando nota ' + numero + ':', e.message); });
 }
 
+// Borra TODO el rastro de un número: conversación, pausa, seguimiento y nota.
+// Pensado para que Lili pueda resetear su propia conversación de prueba y volver
+// a ver el flujo completo (saludo + fotos) cuando ensaya cambios en Olivia.
+function borrarHistorialCompleto(numero) {
+  delete conversaciones[numero];
+  delete pausados[numero];
+  delete seguimientos[numero];
+  delete notas[numero];
+  delete ultimaActividad[numero];
+
+  return Promise.all([
+    pool.query('DELETE FROM conversaciones WHERE numero = $1', [numero]),
+    pool.query('DELETE FROM pausados WHERE numero = $1', [numero]),
+    pool.query('DELETE FROM seguimientos WHERE numero = $1', [numero]),
+    pool.query('DELETE FROM notas WHERE numero = $1', [numero])
+  ]).catch(function(e) { console.error('Error borrando historial de ' + numero + ':', e.message); });
+}
+
 const KEYWORDS_COTIZACION = ['cotización', 'cotizacion', 'propuesta', 'el valor quedaría', 'el valor quedaria', 'te paso el precio', 'precio quedaría', 'precio quedaria', 'presupuesto', 'valor total', 'anticipo'];
 const KEYWORDS_DECISION = ['te mando fotos', 'te envío fotos', 'te envio fotos', 'mira estas fotos', 'aquí unas referencias', 'aqui unas referencias', 'referencia', 'referencias', 'estas opciones', 'qué estilo', 'que estilo', 'cuál te gusta', 'cual te gusta'];
 const KEYWORDS_LEAD_PROMETE = ['mañana', 'manana', 'luego te', 'te paso', 'te envío', 'te envio', 'te mando', 'después', 'despues', 'más tarde', 'mas tarde', 'esta semana', 'hoy te'];
@@ -474,7 +492,7 @@ CATALOGO COMPLETO:
 - Medidas personalizadas: siempre disponibles, escalar para precio
 
 3. REPISAS FLOTANTES
-- Las repisas se pueden fabricar en cualquier largo, pero SOLO tienes precio confirmado para estas medidas exactas (profundidad 15cm, espesor 3.6cm):
+- Las repisas se pueden fabricar en cualquier largo, pero SOLO tienes precio confirmado para estas medidas exactas (profundidad 15cm):
   40cm  → $180.000 (2 soportes)
   50cm  → $200.000 (2 soportes)
   60cm  → $220.000 (2 soportes) ← precio gancho del anuncio
@@ -491,14 +509,17 @@ CATALOGO COMPLETO:
   180cm → $440.000 (4 soportes)
   200cm → $460.000 (4 soportes)
 
+ESPESOR — IMPORTANTE: el espesor estándar es 3.6cm (dos piezas de 18mm), PERO también se puede hacer en 3cm (dos piezas de 15mm) SIN cambio de precio ni de instalación — los herrajes invisibles funcionan igual de bien en los dos espesores. Si el lead pide específicamente 3cm o "más delgada", NO escales por eso — responde con naturalidad que sí se puede, mismo precio, y sigue con el flujo normal. SOLO escala si piden un espesor MENOR a 3cm (ahí sí hay riesgo real con los herrajes y se necesita revisión).
+
 CUÁNDO OLIVIA CIERRA SOLA (sin escalar):
-- La medida está en la tabla de 15 medidas de arriba (15cm de profundidad, 3.6cm espesor).
+- La medida está en la tabla de 15 medidas de arriba (15cm de profundidad, espesor 3.6cm o 3cm — cualquiera de los dos).
 - Es para Medellín (instalación incluida) O es envío a ciudad principal con valor de tabla.
-- No hay ninguna complicación (no piden 30cm de profundidad, no es pared en L, no es cajón, no es módulo).
+- No hay ninguna complicación (no piden 30cm de profundidad, no es pared en L, no es cajón, no es módulo, no piden espesor menor a 3cm).
 En estos casos Olivia cierra sola: da precio → confirma medida → explica pago (60/40 transferencia Bancolombia) → escala para que Lili reciba el anticipo.
 
 CUÁNDO ESCALA SIEMPRE (aunque la medida sea conocida):
 - Piden profundidad diferente a 15cm (30cm, 25cm, 40cm, etc.)
+- Piden espesor MENOR a 3cm (ahí sí hay riesgo con los herrajes y se necesita revisión). Espesor de 3.6cm o 3cm NO escala, es normal.
 - Pared en L, cajón integrado, módulo cerrado, tapa superior.
 - Envío a ciudad NO principal (Ipiales, Pasto, o cualquier ciudad no listada en la tabla de envíos).
 - Repisas de 180 o 200cm con envío (escalar para confirmar costo de envío con Lili).
@@ -522,7 +543,7 @@ CUÁNDO ESCALA SIEMPRE (aunque la medida sea conocida):
 - Ciudades NO listadas arriba (Ipiales, Pasto, u otras no mencionadas): ESCALA para confirmar envío con Lili.
 - Zonas difícil acceso (San Andrés, Leticia, Quibdó, Mitú, etc.): ESCALA siempre.
 - Tiempo: 5-6 dias habiles
-- Caracteristicas siempre mencionar: 15cm profundidad, 3.6cm espesor, herrajes invisibles, esquinas redondeadas, bordes suaves, barniz protector
+- Caracteristicas siempre mencionar: 15cm profundidad, espesor 3.6cm (estándar) o 3cm si lo prefieren, herrajes invisibles, esquinas redondeadas, bordes suaves, barniz protector
 
 REGLA GLOBAL REPISAS — NUNCA menciones el uso específico (TV, baño, sala, cocina, etc.) en ningún mensaje. Habla siempre de la repisa de forma genérica. Si el lead lo menciona, ignóralo y sigue el flujo normal sin referenciarlo.
 Las repisas son compra de impulso. El precio ya viene filtrado desde el anuncio.
@@ -1033,6 +1054,7 @@ app.get('/panel/chat', function(req, res) {
   html += '.btn-cerrar{flex:1;border:none;border-radius:8px;padding:10px 4px;font-size:12px;font-weight:600;cursor:pointer;color:#fff}';
   html += '.btn-venta{background:#4a7c4e}';
   html += '.btn-perdido{background:#a85a4a}';
+  html += '.btn-borrar{width:100%;background:#8a2e2e;margin-top:4px}';
   html += '.nota-input{width:100%;box-sizing:border-box;border:1px solid #cdbfae;border-radius:8px;padding:9px;font-size:14px;font-family:inherit;resize:vertical;min-height:50px;margin-bottom:6px}';
   html += '.btn-nota{width:100%;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;background:#4a7c4e;color:#fff}';
   html += '.acciones-panel{display:none;max-height:55vh;overflow-y:auto;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #cdbfae}';
@@ -1089,6 +1111,11 @@ app.get('/panel/chat', function(req, res) {
   html += '<button class="btn-marcar" onclick="marcar(\'cotizacion_enviada\',event)">📋 Cotización enviada</button>';
   html += '<button class="btn-marcar" onclick="marcar(\'esperando_info\',event)">📏 Espero medidas</button>';
   html += '</div>';
+  html += '<div class="marcar-titulo">Enviar imagen o audio al lead:</div>';
+  html += '<div class="fila-marcar">';
+  html += '<button class="btn-media" onclick="document.getElementById(\'archivo-img\').click()">📷 Imagen</button>';
+  html += '<button class="btn-media" onclick="document.getElementById(\'archivo-audio\').click()">🎤 Audio</button>';
+  html += '</div>';
   html += '<div class="marcar-titulo">Cerrar este lead:</div>';
   html += '<div class="fila-marcar">';
   html += '<button class="btn-cerrar btn-venta" onclick="cerrar(\'cerrado_venta\',event)">✅ Venta cerrada</button>';
@@ -1097,15 +1124,13 @@ app.get('/panel/chat', function(req, res) {
   html += '<div class="marcar-titulo">📝 Nota privada (lo que hablaste por audio, qué esperas, etc.):</div>';
   html += '<textarea id="nota" class="nota-input" placeholder="Ej: Quedó de mandar fotos del material el viernes...">' + escapeHtml(notas[numero] || '') + '</textarea>';
   html += '<button class="btn-nota" onclick="guardarNota(event)">Guardar nota</button>';
+  html += '<div class="marcar-titulo">🗑️ Solo para pruebas (borra TODO el historial de este número):</div>';
+  html += '<button class="btn-cerrar btn-borrar" onclick="borrarHistorial(event)">🗑️ Borrar historial completo</button>';
   html += '</div>';
   html += '<textarea id="txt" placeholder="Escribe tu respuesta..."></textarea>';
   html += '<div class="fila">';
   html += '<button class="btn btn-enviar" onclick="enviar(event)">Enviar</button>';
   html += '<button class="btn btn-acciones" onclick="toggleAcciones()">⚙️ Acciones</button>';
-  html += '</div>';
-  html += '<div class="fila" style="margin-top:6px">';
-  html += '<button class="btn-media" onclick="document.getElementById(\'archivo-img\').click()">📷 Imagen</button>';
-  html += '<button class="btn-media" onclick="document.getElementById(\'archivo-audio\').click()">🎤 Audio</button>';
   html += '</div>';
   html += '<input type="file" id="archivo-img" accept="image/*" style="display:none" onchange="enviarArchivo(this,\'imagen\')">';
   html += '<input type="file" id="archivo-audio" accept="audio/*" style="display:none" onchange="enviarArchivo(this,\'audio\')">';
@@ -1146,12 +1171,18 @@ app.get('/panel/chat', function(req, res) {
   html += 'function enviarArchivo(input,tipo){';
   html += 'var f=input.files[0];if(!f)return;';
   html += 'var fd=new FormData();fd.append("archivo",f);fd.append("token",TK);fd.append("numero",NUM);fd.append("tipo",tipo);';
-  html += 'var btn=document.querySelector(tipo==="imagen"?".btn-media":".btn-media:nth-of-type(2)");';
   html += 'alert("Enviando "+tipo+"... espera un momento 😊");';
   html += 'fetch("/panel/enviar-archivo",{method:"POST",body:fd})';
   html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){location.reload()}else{alert("Error: "+(d.error||"no se pudo enviar"))}})';
   html += '.catch(function(){alert("Error de conexion al enviar el archivo")});';
   html += 'input.value="";}';
+  html += 'function borrarHistorial(e){';
+  html += 'if(!confirm("¿Borrar TODO el historial de +"+NUM+"? Esto no se puede deshacer. Úsalo solo para tus pruebas."))return;';
+  html += 'if(!confirm("Confirma una vez más: se borrará la conversación, notas y estado de este número."))return;';
+  html += 'var b=e.target;b.disabled=true;b.textContent="Borrando...";';
+  html += 'fetch("/panel/borrar-historial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK,numero:NUM})})';
+  html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){alert("Historial borrado 🌿");window.location.href="/panel?token="+TK}else{alert("Error");b.disabled=false;b.textContent="🗑️ Borrar historial completo"}})';
+  html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="🗑️ Borrar historial completo"});}';
   html += '</script>';
   html += '</body></html>';
   res.send(html);
@@ -1233,6 +1264,20 @@ app.post('/panel/nota', function(req, res) {
   guardarNota(numero);
   console.log('Nota guardada para ' + numero);
   res.json({ ok: true });
+});
+
+// Borra por completo el historial de un número (conversación, pausa, seguimiento,
+// nota). Pensado para que Lili resetee su propia conversación de prueba y vuelva
+// a ver el flujo completo (saludo + fotos) cuando ensaya cambios en Olivia.
+app.post('/panel/borrar-historial', function(req, res) {
+  if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
+  var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
+  if (!esNumeroValido(numero)) return res.json({ ok: false });
+
+  borrarHistorialCompleto(numero).then(function() {
+    console.log('Historial borrado completamente para ' + numero);
+    res.json({ ok: true });
+  });
 });
 
 // Reactivación manual en tanda de leads fríos (sin actividad hace 5+ días).
