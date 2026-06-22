@@ -12,7 +12,7 @@ const WEBHOOK_VERIFY_TOKEN = 'hecho_por_lili_2026';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const CONTROL_TOKEN = 'lili2026';
 const LILI_NUMERO = '573008654636';
-const TELEGRAM_TOKEN = '8868128825:AAEv_STo16YwsORBZepK2_raWfAhMNMTiiU';
+const TELEGRAM_TOKEN = '8868128825:AAFcEjUGckC3YyIjdMWz95Q5XPXDPoPii9M';
 const TELEGRAM_CHAT_ID = '2056034612';
 
 // ─── BASE DE DATOS POSTGRESQL ──────────────────────────────────────────────
