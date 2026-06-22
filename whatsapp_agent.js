@@ -104,6 +104,10 @@ function guardarConversacion(numero) {
 }
 
 function marcarPausado(numero) {
+  // PROTECCIÓN: el número de Lili NUNCA debe pausarse por el sistema automático
+  // (ni por escalado, ni por marcar estado, ni por nada). Si el código intenta
+  // pausar a Lili, simplemente se ignora.
+  if (numero === LILI_NUMERO) return;
   pausados[numero] = true;
   pool.query('INSERT INTO pausados (numero) VALUES ($1) ON CONFLICT (numero) DO NOTHING', [numero])
     .catch(function(e) { console.error('Error pausando ' + numero + ':', e.message); });
@@ -1221,6 +1225,14 @@ app.post('/webhook', function(req, res) {
         var from = message.from;
         var texto = message.text.body;
         console.log('Mensaje de ' + from + ': ' + texto);
+
+        // PROTECCIÓN: si el mensaje viene del número de Lili, NUNCA debe
+        // activar el flujo de Olivia (ni escalar, ni pausarse). Esto puede
+        // pasar si Lili prueba el bot desde su propio número.
+        if (from === LILI_NUMERO) {
+          console.log('Mensaje de Lili detectado (numero propio) — Olivia no responde, no se pausa nada');
+          return;
+        }
 
         if (!conversaciones[from]) conversaciones[from] = [];
         conversaciones[from].push({ role: 'user', content: texto });
