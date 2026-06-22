@@ -20,19 +20,14 @@ const LILI_NUMERO = process.env.LILI_NUMERO;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Un numero de WhatsApp siempre es solo digitos. Se usa para validar query
-// params antes de usarlos como clave de objeto o de insertarlos en HTML.
 function esNumeroValido(n) {
   return typeof n === 'string' && /^\d{5,20}$/.test(n);
 }
 
-// Compara un token recibido contra el esperado. Si el esperado no esta
-// configurado (env var faltante), SIEMPRE falla — nunca deja pasar por "undefined === undefined".
 function tokenValido(provisto, esperado) {
   return !!esperado && provisto === esperado;
 }
 
-// Verifica que el POST al webhook venga realmente de Meta (HMAC sobre el body crudo).
 function firmaWebhookValida(req) {
   if (!META_APP_SECRET) return false;
   var firma = req.get('x-hub-signature-256');
@@ -44,26 +39,20 @@ function firmaWebhookValida(req) {
   return crypto.timingSafeEqual(bufFirma, bufEsperada);
 }
 
-// ─── BASE DE DATOS POSTGRESQL ──────────────────────────────────────────────
-// Toda la persistencia (conversaciones, pausas, seguimientos) vive aqui, no en
-// memoria ni en /tmp. Asi sobrevive a reinicios y deploys de Railway.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Estado en memoria (espejo de la BD para acceso rapido).
-// Se carga desde la BD al arrancar y se mantiene sincronizado con cada cambio.
 const conversaciones = {};
 const pausados = {};
 const seguimientos = {};
-const notas = {}; // notas personales de Lili por lead (rastro de lo hablado por audio/fuera del sistema)
-const ultimaActividad = {}; // timestamp del último mensaje por lead, para ordenar el panel
-const procesando = {}; // evita procesar dos mensajes del mismo numero a la vez
+const notas = {};
+const ultimaActividad = {};
+const procesando = {};
 let pausadoTodo = false;
 let bdLista = false;
 
-// Crear tablas si no existen + cargar todo a memoria
 async function inicializarBD() {
   try {
     await pool.query('CREATE TABLE IF NOT EXISTS conversaciones (numero TEXT PRIMARY KEY, mensajes JSONB NOT NULL DEFAULT \'[]\')');
@@ -76,8 +65,6 @@ async function inicializarBD() {
     var baseT = Date.now();
     rc.rows.forEach(function(row, idx) {
       conversaciones[row.numero] = row.mensajes || [];
-      // Marca base por orden de carga (los más recientes en la BD quedan arriba).
-      // Se irá actualizando con cada mensaje nuevo real.
       ultimaActividad[row.numero] = baseT - (rc.rows.length - idx) * 1000;
     });
 
@@ -107,7 +94,6 @@ async function inicializarBD() {
   }
 }
 
-// ─── FUNCIONES DE PERSISTENCIA (memoria + BD) ──────────────────────────────
 function guardarConversacion(numero) {
   ultimaActividad[numero] = Date.now();
   var msgs = conversaciones[numero] || [];
@@ -164,9 +150,7 @@ function guardarNota(numero) {
     [numero, nota]
   ).catch(function(e) { console.error('Error guardando nota ' + numero + ':', e.message); });
 }
-// ─── FIN PERSISTENCIA ──────────────────────────────────────────────────────
 
-// ─── SISTEMA DE SEGUIMIENTO ────────────────────────────────────────────────
 const KEYWORDS_COTIZACION = ['cotización', 'cotizacion', 'propuesta', 'el valor quedaría', 'el valor quedaria', 'te paso el precio', 'precio quedaría', 'precio quedaria', 'presupuesto', 'valor total', 'anticipo'];
 const KEYWORDS_DECISION = ['te mando fotos', 'te envío fotos', 'te envio fotos', 'mira estas fotos', 'aquí unas referencias', 'aqui unas referencias', 'referencia', 'referencias', 'estas opciones', 'qué estilo', 'que estilo', 'cuál te gusta', 'cual te gusta'];
 const KEYWORDS_LEAD_PROMETE = ['mañana', 'manana', 'luego te', 'te paso', 'te envío', 'te envio', 'te mando', 'después', 'despues', 'más tarde', 'mas tarde', 'esta semana', 'hoy te'];
@@ -248,7 +232,6 @@ function getNombreLead(numero) {
   return null;
 }
 
-// CRON: revisar seguimientos cada hora
 setInterval(function() {
   if (!bdLista) return;
   var ahora = Date.now();
@@ -261,10 +244,6 @@ setInterval(function() {
     if (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido') continue;
     if (seg.estado === 'saludo_sin_respuesta') continue;
     if (pausadoTodo) continue;
-    // IMPORTANTE: NO bloqueamos por pausados[numero] aquí.
-    // Los seguimientos de cotización/fotos/info deben dispararse incluso si el lead está pausado
-    // (Lili lo pausó para atenderlo, pero el seguimiento automático de Olivia sigue corriendo).
-    // El cron quita la pausa antes de enviar el mensaje (línea quitarPausado abajo).
 
     var transcurrido = ahora - seg.timestamp;
     var tiempoEspera = null;
@@ -300,7 +279,6 @@ setInterval(function() {
   }
 }, 60 * 60 * 1000);
 
-// ─── TANDAS DIARIAS DE REACTIVACIÓN (12PM Y 7PM HORA COLOMBIA) ─────────────
 var ultimaTandaReactivacion = null;
 
 function mensajeReactivacion(intento) {
@@ -362,7 +340,6 @@ setInterval(function() {
   });
 
 }, 60 * 60 * 1000);
-// ─── FIN SISTEMA DE SEGUIMIENTO ───────────────────────────────────────────
 
 const SYSTEM_PROMPT = `Eres Olivia, parte del equipo de Hecho por Lili, una marca de muebles artesanales en roble natural en Medellin, Colombia, fundada por la diseñadora Lili Hurtado. Acompañas a los clientes en WhatsApp: les das información, los asesoras sobre los muebles y los espacios, y cuando hace falta atención personal o algo se sale de lo que sabes, pasas la conversación a Lili.
 
@@ -402,6 +379,7 @@ REGLA CRÍTICA — CUANDO EL CLIENTE ENVÍA UNA IMAGEN O FOTO:
 Si ves en el historial "[El cliente envió una imagen]", significa que el lead mandó una foto (puede ser un mueble que quiere cotizar, una foto de su espacio, una referencia, etc.). Tú no puedes ver la imagen, pero debes responder con calidez y escalar para que Lili la vea:
 "¡Gracias por la foto! 😊 Ya le aviso a Lili para que la revise y te dé todos los detalles. En un momentico te escribe. [ESCALAR]"
 NUNCA ignores una imagen ni respondas como si no hubiera pasado nada.
+
 Si ya hay mensajes previos en el historial con este número, NUNCA vuelvas a saludar como si fuera la primera vez. NUNCA digas "Hola, soy Olivia..." de nuevo.
 Lee el historial, entiende en qué punto iba la conversación y continúa naturalmente desde ahí.
 Ejemplos:
@@ -452,7 +430,6 @@ CATALOGO COMPLETO:
 - Ejemplo de error GRAVE que NUNCA debes cometer: el escritorio flotante de 75cm vale $1.590.000; si piden uno de 100cm, NO digas "$1.890.000" ni ningún número — ESCALA. Otro ejemplo: la repisa de 130cm vale $370.000; si piden 136cm, NO es lo mismo — ESCALA, no asumas que es la misma.
 - Es mil veces mejor escalar y que Lili dé el precio, que inventar o redondear un número equivocado. Inventar un precio es el peor error que puedes cometer.
 
-
 1. ESCRITORIO FLOTANTE (producto estrella)
 - Medidas estandar: 75 x 46.5 x 15 cm
 - Material: Roble alistonado macizo 18mm
@@ -475,7 +452,6 @@ CATALOGO COMPLETO:
 
 3. REPISAS FLOTANTES
 - Las repisas se pueden fabricar en cualquier largo, pero SOLO tienes precio confirmado para estas medidas exactas (profundidad 15cm, espesor 3.6cm):
-
   50cm  → $200.000 (2 soportes)
   60cm  → $220.000 (2 soportes) ← precio gancho del anuncio
   70cm  → $240.000 (2 soportes)
@@ -504,7 +480,6 @@ CUÁNDO ESCALA SIEMPRE (aunque la medida sea conocida):
 - Repisas de 180 o 200cm con envío (escalar para confirmar costo de envío con Lili).
 - Combos con descuento (Olivia puede mencionarlos pero confirma con Lili antes de cerrar).
 - Cualquier duda sobre material, sistema de instalación en muro especial.
-
 - REGLA DURA: NUNCA calcules ni inventes precios fuera de esta tabla. Si la medida o el caso no aparece, escala: "Esa medida la fabricamos con gusto 😊 Permíteme un momento que te confirmo el valor exacto. [ESCALAR]"
 - Instalacion: Incluida en Medellin
 - Envio otras ciudades: SÍ se envía. Va empacada con sus soportes (el cliente la instala). NO hay instalación fuera de Medellín.
@@ -857,16 +832,12 @@ function estadoLegible(numero) {
 app.get('/panel', function(req, res) {
   if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
   var leads = Object.keys(conversaciones).filter(function(n) { return n !== LILI_NUMERO; });
-  // Ordenar por última actividad: el lead con quien se habló más recientemente queda arriba
   leads.sort(function(a, b) {
     var ta = ultimaActividad[a] || 0;
     var tb = ultimaActividad[b] || 0;
     return tb - ta;
   });
 
-  // Separar en dos grupos:
-  // "Atendiendo yo" = leads pausados que NO están cerrados (Lili los está manejando)
-  // "Olivia maneja" = el resto
   var mios = [];
   var deOlivia = [];
   leads.forEach(function(n) {
@@ -879,20 +850,41 @@ app.get('/panel', function(req, res) {
     }
   });
 
-  function tarjetaLead(n) {
-    var h = '<a class="lead" href="/panel/chat?token=' + CONTROL_TOKEN + '&numero=' + encodeURIComponent(n) + '">';
-    h += '<div class="num">+' + escapeHtml(n) + '</div>';
-    h += '<div class="est">' + estadoLegible(n) + '</div>';
-    if (notas[n]) {
-      h += '<div class="nota-prev">📝 ' + escapeHtml(notas[n]) + '</div>';
+  // "Fríos" = sin actividad hace 5+ días y NO cerrados (venta ni perdido)
+  var CINCO_DIAS_MS = 5 * 24 * 60 * 60 * 1000;
+  var ahoraTs = Date.now();
+  var frios = [];
+  leads.forEach(function(n) {
+    var seg = seguimientos[n];
+    var cerrado = seg && (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido');
+    if (cerrado) return;
+    var ultima = ultimaActividad[n] || 0;
+    if (ahoraTs - ultima >= CINCO_DIAS_MS) frios.push(n);
+  });
+  frios.sort(function(a, b) { return (ultimaActividad[a] || 0) - (ultimaActividad[b] || 0); });
+
+  function tarjetaLead(n, conCheckbox) {
+    var dias = Math.floor((ahoraTs - (ultimaActividad[n] || 0)) / (24 * 60 * 60 * 1000));
+    var h = conCheckbox ? '<div class="lead lead-frio">' : ('<a class="lead" href="/panel/chat?token=' + CONTROL_TOKEN + '&numero=' + encodeURIComponent(n) + '">');
+    if (conCheckbox) {
+      h += '<label class="check-wrap"><input type="checkbox" class="chk-frio" value="' + escapeHtml(n) + '">';
+      h += '<span><div class="num">+' + escapeHtml(n) + '</div>';
+      h += '<div class="est">' + estadoLegible(n) + ' · ' + dias + ' días sin actividad</div>';
+      if (notas[n]) h += '<div class="nota-prev">📝 ' + escapeHtml(notas[n]) + '</div>';
+      h += '</span></label>';
+      h += '<a class="ver-chat" href="/panel/chat?token=' + CONTROL_TOKEN + '&numero=' + encodeURIComponent(n) + '">Ver chat →</a>';
+    } else {
+      h += '<div class="num">+' + escapeHtml(n) + '</div>';
+      h += '<div class="est">' + estadoLegible(n) + '</div>';
+      if (notas[n]) h += '<div class="nota-prev">📝 ' + escapeHtml(notas[n]) + '</div>';
     }
-    h += '</a>';
+    h += conCheckbox ? '</div>' : '</a>';
     return h;
   }
 
-  function listaGrupo(arr) {
+  function listaGrupo(arr, conCheckbox) {
     if (arr.length === 0) return '<div class="vacio">No hay leads en este grupo.</div>';
-    return arr.map(tarjetaLead).join('');
+    return arr.map(function(n) { return tarjetaLead(n, conCheckbox); }).join('');
   }
 
   var html = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
@@ -908,23 +900,71 @@ app.get('/panel', function(req, res) {
   html += '.nota-prev{font-size:12px;color:#4a7c4e;margin-top:6px;background:#f0f5ee;padding:6px 8px;border-radius:6px}';
   html += '.vacio{color:#aaa;font-style:italic;padding:10px 0}';
   html += '.grupo{display:none}.grupo.activo{display:block}';
+  html += '.lead-frio{display:flex;align-items:center;justify-content:space-between;gap:8px}';
+  html += '.check-wrap{display:flex;align-items:flex-start;gap:10px;flex:1;cursor:pointer}';
+  html += '.check-wrap input{margin-top:4px;width:18px;height:18px;flex-shrink:0}';
+  html += '.ver-chat{font-size:12px;color:#7a7268;text-decoration:none;white-space:nowrap}';
+  html += '.barra-frios{position:sticky;top:0;background:#f5f3ef;padding:10px 0;margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}';
+  html += '.btn-sel{border:1px solid #cdbfae;background:#fff;color:#5a534b;border-radius:8px;padding:8px 12px;font-size:13px;cursor:pointer}';
+  html += '.btn-reactivar{border:none;background:#4a7c4e;color:#fff;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}';
+  html += '.contador-sel{font-size:13px;color:#7a7268}';
+  html += '.nota-input{width:100%;box-sizing:border-box;border:1px solid #cdbfae;border-radius:8px;padding:9px;font-size:14px;font-family:inherit;resize:vertical;min-height:50px;margin-bottom:6px}';
+  html += '.marcar-titulo{font-size:11px;color:#7a7268;text-align:left;margin-top:10px;margin-bottom:6px}';
   html += '</style></head><body>';
   html += '<h1>🌿 Panel de Conversaciones</h1>';
 
   html += '<div class="tabs">';
   html += '<button class="tab activa" id="tab-mios" onclick="verGrupo(\'mios\')">🔵 Atendiendo yo (' + mios.length + ')</button>';
   html += '<button class="tab" id="tab-olivia" onclick="verGrupo(\'olivia\')">🟢 Olivia maneja (' + deOlivia.length + ')</button>';
+  html += '<button class="tab" id="tab-frios" onclick="verGrupo(\'frios\')">❄️ Fríos (' + frios.length + ')</button>';
   html += '</div>';
 
-  html += '<div class="grupo activo" id="grupo-mios">' + listaGrupo(mios) + '</div>';
-  html += '<div class="grupo" id="grupo-olivia">' + listaGrupo(deOlivia) + '</div>';
+  html += '<div class="grupo activo" id="grupo-mios">' + listaGrupo(mios, false) + '</div>';
+  html += '<div class="grupo" id="grupo-olivia">' + listaGrupo(deOlivia, false) + '</div>';
+
+  html += '<div class="grupo" id="grupo-frios">';
+  html += '<div class="barra-frios">';
+  html += '<button class="btn-sel" onclick="seleccionarTodos(true)">Seleccionar todos</button>';
+  html += '<button class="btn-sel" onclick="seleccionarTodos(false)">Ninguno</button>';
+  html += '<span class="contador-sel" id="contador-sel">0 seleccionados</span>';
+  html += '</div>';
+  html += '<div class="marcar-titulo">Mensaje de reactivación que se enviará:</div>';
+  html += '<textarea id="msg-reactivacion" class="nota-input" style="margin-bottom:10px">Hola! 😊 Hace unos días me escribiste por la repisa en roble. ¿Todavía la estás pensando? Tengo cupo de fabricación esta semana si quieres que te la deje lista 🌿</textarea>';
+  html += '<button class="btn-reactivar" onclick="reactivarSeleccionados()" id="btn-reactivar" style="width:100%;margin-bottom:14px;padding:12px">📨 Reactivar seleccionados</button>';
+  html += listaGrupo(frios, true);
+  html += '</div>';
 
   html += '<script>';
+  html += 'var TK_PANEL="' + CONTROL_TOKEN + '";';
   html += 'function verGrupo(g){';
   html += 'document.getElementById("grupo-mios").className = g==="mios" ? "grupo activo" : "grupo";';
   html += 'document.getElementById("grupo-olivia").className = g==="olivia" ? "grupo activo" : "grupo";';
+  html += 'document.getElementById("grupo-frios").className = g==="frios" ? "grupo activo" : "grupo";';
   html += 'document.getElementById("tab-mios").className = g==="mios" ? "tab activa" : "tab";';
   html += 'document.getElementById("tab-olivia").className = g==="olivia" ? "tab activa" : "tab";';
+  html += 'document.getElementById("tab-frios").className = g==="frios" ? "tab activa" : "tab";';
+  html += '}';
+  html += 'function actualizarContador(){';
+  html += 'var n=document.querySelectorAll(".chk-frio:checked").length;';
+  html += 'document.getElementById("contador-sel").textContent=n+" seleccionados";';
+  html += '}';
+  html += 'document.addEventListener("change",function(e){if(e.target.classList.contains("chk-frio"))actualizarContador();});';
+  html += 'function seleccionarTodos(valor){';
+  html += 'document.querySelectorAll(".chk-frio").forEach(function(c){c.checked=valor;});';
+  html += 'actualizarContador();}';
+  html += 'function reactivarSeleccionados(){';
+  html += 'var seleccionados=[];';
+  html += 'document.querySelectorAll(".chk-frio:checked").forEach(function(c){seleccionados.push(c.value);});';
+  html += 'if(seleccionados.length===0){alert("Selecciona al menos un lead");return;}';
+  html += 'var mensaje=document.getElementById("msg-reactivacion").value.trim();';
+  html += 'if(!mensaje){alert("Escribe el mensaje de reactivación");return;}';
+  html += 'if(!confirm("¿Enviar este mensaje a "+seleccionados.length+" leads? Quedarán pausados para que les hagas seguimiento."))return;';
+  html += 'var b=document.getElementById("btn-reactivar");b.disabled=true;b.textContent="Enviando...";';
+  html += 'fetch("/panel/reactivar-tanda",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK_PANEL,numeros:seleccionados,mensaje:mensaje})})';
+  html += '.then(function(r){return r.json()}).then(function(d){';
+  html += 'if(d.ok){alert("Enviado a "+d.enviados+" leads 🌿");location.reload();}';
+  html += 'else{alert("Error al enviar");b.disabled=false;b.textContent="📨 Reactivar seleccionados";}';
+  html += '}).catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="📨 Reactivar seleccionados";});';
   html += '}';
   html += '</script>';
   html += '</body></html>';
@@ -988,8 +1028,6 @@ app.get('/panel/chat', function(req, res) {
 
   var estaPausado = pausados[numero] ? true : false;
   html += '<div class="barra">';
-
-  // Panel de acciones desplegable (arranca oculto)
   html += '<div id="acciones" class="acciones-panel">';
   html += '<div class="aviso">' + (estaPausado ? 'El agente está pausado — tú atiendes este lead' : 'El agente está activo en este lead') + '</div>';
   if (estaPausado) {
@@ -1012,8 +1050,6 @@ app.get('/panel/chat', function(req, res) {
   html += '<textarea id="nota" class="nota-input" placeholder="Ej: Quedó de mandar fotos del material el viernes...">' + escapeHtml(notas[numero] || '') + '</textarea>';
   html += '<button class="btn-nota" onclick="guardarNota(event)">Guardar nota</button>';
   html += '</div>';
-
-  // Fila fija esencial: texto + Enviar + Acciones
   html += '<textarea id="txt" placeholder="Escribe tu respuesta..."></textarea>';
   html += '<div class="fila">';
   html += '<button class="btn btn-enviar" onclick="enviar(event)">Enviar</button>';
@@ -1076,8 +1112,6 @@ app.post('/panel/enviar', function(req, res) {
   res.json({ ok: true });
 });
 
-// Endpoint para marcar un estado de seguimiento desde el panel
-// (cuando Lili envía fotos/cotización/referencias por fuera y quiere avisarle al agente)
 app.post('/panel/marcar', function(req, res) {
   if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
@@ -1085,23 +1119,51 @@ app.post('/panel/marcar', function(req, res) {
   var estadosValidos = ['esperando_info', 'esperando_decision', 'cotizacion_enviada'];
   if (!esNumeroValido(numero) || estadosValidos.indexOf(estado) === -1) return res.json({ ok: false });
 
-  // Activar el seguimiento con el estado indicado (resetea timer e intentos)
   seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0 };
   guardarSeguimiento(numero);
   console.log('Estado marcado desde panel para ' + numero + ': ' + estado);
   res.json({ ok: true });
 });
 
-// Endpoint para guardar la nota privada de un lead
 app.post('/panel/nota', function(req, res) {
   if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
   if (!esNumeroValido(numero)) return res.json({ ok: false });
-  var nota = (req.body.nota || '').slice(0, 1000); // límite de seguridad
+  var nota = (req.body.nota || '').slice(0, 1000);
   if (nota.trim() === '') { delete notas[numero]; } else { notas[numero] = nota; }
   guardarNota(numero);
   console.log('Nota guardada para ' + numero);
   res.json({ ok: true });
+});
+
+// Reactivación manual en tanda de leads fríos (sin actividad hace 5+ días).
+app.post('/panel/reactivar-tanda', function(req, res) {
+  if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
+  var numeros = req.body.numeros;
+  var mensaje = (req.body.mensaje || '').trim();
+  if (!Array.isArray(numeros) || numeros.length === 0 || !mensaje) return res.json({ ok: false });
+
+  var numerosLimpios = numeros
+    .map(function(n) { return String(n).replace(/[+\s-]/g, ''); })
+    .filter(esNumeroValido);
+
+  if (numerosLimpios.length === 0) return res.json({ ok: false });
+
+  numerosLimpios.forEach(function(numero, idx) {
+    setTimeout(function() {
+      marcarPausado(numero);
+      if (!conversaciones[numero]) conversaciones[numero] = [];
+      conversaciones[numero].push({ role: 'assistant', content: mensaje });
+      if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
+      guardarConversacion(numero);
+      cancelarSeguimiento(numero);
+      enviarMensaje(numero, mensaje);
+      console.log('Reactivación manual enviada a ' + numero);
+    }, idx * 3000);
+  });
+
+  console.log('Tanda de reactivación iniciada: ' + numerosLimpios.length + ' leads');
+  res.json({ ok: true, enviados: numerosLimpios.length });
 });
 
 function escapeHtml(texto) {
@@ -1160,9 +1222,6 @@ app.post('/webhook', function(req, res) {
         var texto = message.text.body;
         console.log('Mensaje de ' + from + ': ' + texto);
 
-        // GUARDAR SIEMPRE el mensaje del lead en la BD, aunque esté pausado.
-        // Así Lili ve todas las respuestas en el panel para hacer seguimiento.
-        // La pausa solo evita que el AGENTE responda solo — no que se registre el mensaje.
         if (!conversaciones[from]) conversaciones[from] = [];
         conversaciones[from].push({ role: 'user', content: texto });
         if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
@@ -1184,14 +1243,12 @@ app.post('/webhook', function(req, res) {
         setTimeout(function() { procesarMensaje(from, texto); }, 500);
       }
 
-      // Manejo de mensajes de imagen/video/audio — Olivia no puede verlos pero responde
       if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && esNumeroValido(message.from)) {
         var fromMedia = message.from;
         console.log('Mensaje tipo ' + message.type + ' de ' + fromMedia + ' — respondiendo con texto');
 
         if (pausadoTodo || pausados[fromMedia] || procesando[fromMedia]) return;
 
-        // Guardar referencia en historial para que Olivia sepa que hubo un archivo
         var textoMedia = '[El cliente envió ' + (message.type === 'image' ? 'una imagen' : message.type === 'audio' ? 'un audio' : 'un archivo') + ']';
         if (!conversaciones[fromMedia]) conversaciones[fromMedia] = [];
         conversaciones[fromMedia].push({ role: 'user', content: textoMedia });
@@ -1208,12 +1265,8 @@ app.post('/webhook', function(req, res) {
 });
 
 function procesarMensaje(from, texto) {
-  // El mensaje del lead ya fue agregado al historial y guardado en el webhook.
-  // Aquí solo generamos la respuesta del agente.
   if (!conversaciones[from]) conversaciones[from] = [];
 
-  // Detectar si es el primer mensaje (saludo inicial) para mandar fotos primero
-  // SOLO mandamos fotos si el lead menciona repisa en su primer mensaje
   var sinRespuestasAgente = conversaciones[from].filter(function(m) { return m.role === 'assistant'; }).length === 0;
   var textoLower = texto.toLowerCase();
   var mencionaRepisa = textoLower.indexOf('repisa') !== -1 || textoLower.indexOf('estante') !== -1 || textoLower.indexOf('shelf') !== -1;
@@ -1231,7 +1284,6 @@ function procesarMensaje(from, texto) {
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
     var necesitaFotosExtra = respuesta.indexOf('[FOTOS_EXTRA]') !== -1;
-    // Respaldo: detectar por palabras clave del lead en caso de que Olivia olvide el tag
     if (!necesitaFotosExtra && !necesitaEscalar) {
       var textoLead = texto.toLowerCase();
       var pideFotos = textoLead.indexOf('foto') !== -1 || textoLead.indexOf('imagen') !== -1 ||
@@ -1254,7 +1306,6 @@ function procesarMensaje(from, texto) {
       }
     }
 
-    // Si es el primer mensaje: fotos primero, luego el texto del saludo
     if (esPrimerMensaje) {
       enviarFotosSaludo(from)
         .then(function() {
@@ -1265,7 +1316,6 @@ function procesarMensaje(from, texto) {
           delete procesando[from];
         });
     } else if (necesitaFotosExtra) {
-      // Si Olivia detectó que piden más fotos: texto primero, luego las fotos extra
       enviarMensaje(from, textoLimpio);
       setTimeout(function() { enviarFotosExtra(from); }, 1500);
       delete procesando[from];
@@ -1280,7 +1330,6 @@ function procesarMensaje(from, texto) {
   });
 }
 
-// ─── FOTOS DE PRODUCTO ────────────────────────────────────────────────────
 const FOTOS = {
   principal:    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000005ba4722fac900f399e5dc35f_dnlkjv.png',
   acompanante:  'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781465915/file_00000000f730720eac95c2814d66aa6b_atssh8.png',
@@ -1307,7 +1356,6 @@ function enviarImagen(to, urlFoto, caption) {
   });
 }
 
-// Envía las dos fotos del saludo en secuencia (principal + acompañante)
 function enviarFotosSaludo(to) {
   return enviarImagen(to, FOTOS.principal)
     .then(function() {
@@ -1318,7 +1366,6 @@ function enviarFotosSaludo(to) {
     });
 }
 
-// Envía fotos extra cuando el lead pide más imágenes
 function enviarFotosExtra(to) {
   return enviarImagen(to, FOTOS.extra_1)
     .then(function() {
@@ -1328,7 +1375,6 @@ function enviarFotosExtra(to) {
       return enviarImagen(to, FOTOS.extra_2);
     });
 }
-// ─── FIN FOTOS ─────────────────────────────────────────────────────────────
 
 function enviarMensaje(to, texto) {
   return axios.post(
@@ -1342,7 +1388,6 @@ function enviarMensaje(to, texto) {
   });
 }
 
-// Arrancar: primero conectar a la BD, luego levantar el servidor
 inicializarBD().then(function() {
   app.listen(PORT, function() {
     console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
