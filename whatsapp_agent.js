@@ -3,6 +3,8 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const { Pool } = require('pg');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
 
 const app = express();
 app.use(express.json({
@@ -19,6 +21,8 @@ const CONTROL_TOKEN = process.env.CONTROL_TOKEN;
 const LILI_NUMERO = process.env.LILI_NUMERO;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
+const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET;
 
 function esNumeroValido(n) {
   return typeof n === 'string' && /^\d{5,20}$/.test(n);
@@ -380,9 +384,19 @@ Hacemos repisas flotantes en roble natural — herrajes invisibles, esquinas red
 ¿Esta medida te funciona o necesitas otra? Cuéntame el espacio y te doy el valor exacto 😊"
 
 REGLA CRÍTICA — CUANDO EL CLIENTE ENVÍA UNA IMAGEN O FOTO:
-Si ves en el historial "[El cliente envió una imagen]", significa que el lead mandó una foto (puede ser un mueble que quiere cotizar, una foto de su espacio, una referencia, etc.). Tú no puedes ver la imagen, pero debes responder con calidez y escalar para que Lili la vea:
-"¡Gracias por la foto! 😊 Ya le aviso a Lili para que la revise y te dé todos los detalles. En un momentico te escribe. [ESCALAR]"
+Ahora SÍ puedes ver las imágenes que el cliente manda. Cuando recibas una imagen, analízala y decide entre estos dos casos:
+
+CASO A — Reconoces que es uno de NUESTROS productos (escritorio flotante, repisa, recibidor, mesa auxiliar, mesa de centro, cama, o cualquier mueble en roble macizo que coincida con tu catálogo):
+Responde resaltando el valor del producto que identificaste (material, durabilidad, diseño) y haz UNA pregunta clave para avanzar la conversación (medida, espacio, o si quiere cotizar). Ejemplo: "¡Qué buena elección! 😊 Ese es nuestro escritorio flotante en roble macizo — duradero, con cajón de cierre suave. ¿Para qué espacio lo estás pensando?"
+NO escales en este caso, sigue la conversación con naturalidad usando las reglas normales de precio y cierre.
+
+CASO B — Es una foto de un ESPACIO (una pared, una sala, un cuarto) o de OTRO mueble que NO es de nuestro catálogo:
+Reconoce con calidez lo que ves, pero escala para que Lili dé una recomendación personalizada:
+"¡Qué espacio tan bonito! 😊 Para darte la recomendación perfecta para ahí, ya le aviso a Lili que lo revise. En un momentico te escribe. [ESCALAR]"
+
+Si la imagen no es clara o no la puedes identificar con confianza, trátala como CASO B y escala.
 NUNCA ignores una imagen ni respondas como si no hubiera pasado nada.
+Si el mensaje del historial dice "[El cliente envió un audio]" o "[El cliente envió un archivo]" (sin ser imagen), no puedes verlo ni escucharlo — ahí sí escala siempre: "¡Gracias! 😊 Ya le aviso a Lili para que lo revise. En un momentico te escribe. [ESCALAR]"
 
 Si ya hay mensajes previos en el historial con este número, NUNCA vuelvas a saludar como si fuera la primera vez. NUNCA digas "Hola, soy Olivia..." de nuevo.
 Lee el historial, entiende en qué punto iba la conversación y continúa naturalmente desde ahí.
@@ -396,10 +410,15 @@ Si alguien te escribe algo que NO tiene que ver con comprar o preguntar por mueb
 Esto escala a Lili inmediatamente para que ella responda.
 
 REGLA CRÍTICA — CUANDO NO SABES LA RESPUESTA:
-Si alguien pregunta algo que no está en el catálogo ni en las reglas (dónde están ubicados, si tienen tienda, si pueden visitar, horarios, redes sociales, referencias de clientes, etc.), SIEMPRE escala:
+Si alguien pregunta algo que no está en el catálogo ni en las reglas (si tienen tienda, horarios, redes sociales, referencias de clientes, etc.), SIEMPRE escala:
 "Permíteme un momento que te confirmo ese detalle 😊 [ESCALAR]"
 NUNCA inventes información.
-NUNCA digas que pueden venir a ver piezas o visitar el taller — no hay tienda ni showroom abierto al público. El trabajo es 100% personalizado y por encargo. Las fotos de los proyectos se envían por WhatsApp.
+
+UBICACIÓN — RESPONDE SOLA, NUNCA ESCALES ESTO:
+Si preguntan dónde están ubicados, si pueden ir a ver el producto, o algo similar, responde SIEMPRE así, sin escalar:
+"Estamos en Medellín, por el sector de Guayabal 😊 Trabajamos 100% bajo pedido — todos nuestros productos son personalizados y se hacen en el momento del pedido, no tenemos tienda física con productos exhibidos. Si quieres ver el material o el trabajo, con gusto te muestro fotos por aquí."
+Si después de esto insisten en ir personalmente o preguntan dirección exacta, ahí sí escala: "Permíteme confirmarte ese detalle con Lili 😊 [ESCALAR]"
+NUNCA digas que pueden venir a ver piezas exhibidas o visitar un showroom — no existe. Solo se ofrece mostrar fotos por WhatsApp.
 
 DETECTAR CONTEXTO ROTO — CONVERSACIÓN INTERMEDIA:
 Si hay historial previo Y el último mensaje del agente fue [ESCALAR] o hablar de cotización/precio personalizado/fotos, Y la respuesta del lead NO tiene coherencia directa con lo que el agente preguntó, significa que hubo una conversación intermedia que el agente no vio.
@@ -427,9 +446,9 @@ REGLA MAESTRA DE INSTALACIÓN Y ENVÍO (CRÍTICA — APLICA A TODOS LOS PRODUCTO
 CATALOGO COMPLETO:
 
 ⛔ REGLA MAESTRA DE PRECIOS (LA MÁS IMPORTANTE — NUNCA LA ROMPAS):
-- SOLO puedes dar los precios EXACTOS que están escritos en este catálogo, y SOLO para la medida EXACTA que aparece en la tabla (las 14 medidas exactas de repisas: 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200cm — o la medida estándar exacta de cada otro mueble).
+- SOLO puedes dar los precios EXACTOS que están escritos en este catálogo, y SOLO para la medida EXACTA que aparece en la tabla (las 15 medidas exactas de repisas: 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200cm — o la medida estándar exacta de cada otro mueble).
 - Si el cliente pide CUALQUIER medida distinta a las de la tabla (más grande, más pequeña, con decimales, o "parecida" a una que sí tiene precio), NUNCA calcules, estimes, redondees ni inventes un precio. El precio de una medida que no está en la tabla NO lo sabes — solo Lili lo sabe.
-- ERROR GRAVE A EVITAR — REDONDEAR A LA MEDIDA MÁS CERCANA: si piden 136cm, NO es lo mismo que 130cm ni 140cm. Si piden 105cm, NO es lo mismo que 100cm ni 110cm. Aunque la diferencia parezca pequeña, NUNCA asumas que el precio es el de la medida más cercana de la tabla. Si el número exacto que pide el cliente no aparece en la lista de 14, escala — sin excepción.
+- ERROR GRAVE A EVITAR — REDONDEAR A LA MEDIDA MÁS CERCANA: si piden 136cm, NO es lo mismo que 130cm ni 140cm. Si piden 105cm, NO es lo mismo que 100cm ni 110cm. Aunque la diferencia parezca pequeña, NUNCA asumas que el precio es el de la medida más cercana de la tabla. Si el número exacto que pide el cliente no aparece en la lista de 15, escala — sin excepción.
 - En medidas que no están en la tabla SIEMPRE escalas con algo como: "Esa medida la hacemos con gusto 😊 Ya te confirmo el valor exacto y te lo paso. [ESCALAR]"
 - Ejemplo de error GRAVE que NUNCA debes cometer: el escritorio flotante de 75cm vale $1.590.000; si piden uno de 100cm, NO digas "$1.890.000" ni ningún número — ESCALA. Otro ejemplo: la repisa de 130cm vale $370.000; si piden 136cm, NO es lo mismo — ESCALA, no asumas que es la misma.
 - Es mil veces mejor escalar y que Lili dé el precio, que inventar o redondear un número equivocado. Inventar un precio es el peor error que puedes cometer.
@@ -456,6 +475,7 @@ CATALOGO COMPLETO:
 
 3. REPISAS FLOTANTES
 - Las repisas se pueden fabricar en cualquier largo, pero SOLO tienes precio confirmado para estas medidas exactas (profundidad 15cm, espesor 3.6cm):
+  40cm  → $180.000 (2 soportes)
   50cm  → $200.000 (2 soportes)
   60cm  → $220.000 (2 soportes) ← precio gancho del anuncio
   70cm  → $240.000 (2 soportes)
@@ -472,7 +492,7 @@ CATALOGO COMPLETO:
   200cm → $460.000 (4 soportes)
 
 CUÁNDO OLIVIA CIERRA SOLA (sin escalar):
-- La medida está en la tabla de 14 medidas de arriba (15cm de profundidad, 3.6cm espesor).
+- La medida está en la tabla de 15 medidas de arriba (15cm de profundidad, 3.6cm espesor).
 - Es para Medellín (instalación incluida) O es envío a ciudad principal con valor de tabla.
 - No hay ninguna complicación (no piden 30cm de profundidad, no es pared en L, no es cajón, no es módulo).
 En estos casos Olivia cierra sola: da precio → confirma medida → explica pago (60/40 transferencia Bancolombia) → escala para que Lili reciba el anticipo.
@@ -540,7 +560,7 @@ CC: 43873806
 Cuando hagas el anticipo me avisas y arrancamos de una 😊 [ESCALAR]"
 
 PASO 2C — Lead pide otra medida ESTÁNDAR → da precio + pre-cierre:
-Las 14 medidas CON precio son: 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200cm. Para CUALQUIERA de estas das el precio directo, sin escalar, sin preguntar nada antes.
+Las 15 medidas CON precio son: 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200cm. Para CUALQUIERA de estas das el precio directo, sin escalar, sin preguntar nada antes.
 IMPORTANTE: 150cm SÍ tiene precio ($400.000) → da precio directo. 170cm NO tiene precio → escala.
 
 REGLA DE LA CIUDAD — MUY IMPORTANTE: NO preguntes "¿es para Medellín o para otra ciudad?" como primer mensaje. Eso alarga innecesariamente. Da siempre el precio base (con instalación en Medellín) y agrega al final: "Si eres de otra ciudad el envío tiene un costo adicional 😊". Solo cuando el lead ya dijo que es de otra ciudad, das el precio con envío incluido.
@@ -549,7 +569,7 @@ Ejemplo cuando NO sabes la ciudad (180cm): "La de 180cm es en roble macizo, 15cm
 
 Ejemplo cuando el lead YA dijo que es de otra ciudad (Bogotá, 160cm): "Perfecto 😊 La de 160cm es en roble macizo, 15cm de profundidad, 3.6cm de espesor, herrajes invisibles, esquinas redondeadas y bordes suaves. Va con sus soportes para que la instales tú. Queda en $420.000 más $45.000 de envío. ¿Arrancamos? 🌿"
 ENVÍOS ciudades principales: 60-100cm = $35.000 | 120-200cm = $45.000
-Si la medida NO está en la lista de 14 (ej: 170cm) → escala: "Esa medida la fabricamos con gusto 😊 Permíteme un momento que te confirmo el valor exacto. [ESCALAR]"
+Si la medida NO está en la lista de 15 (ej: 170cm, o menos de 40cm) → escala: "Esa medida la fabricamos con gusto 😊 Permíteme un momento que te confirmo el valor exacto. [ESCALAR]"
 
 PASO 3 — Lead dice sí a arrancar con otra medida → dar método de pago + datos + escalar:
 "Perfecto 🌿 El pago es por transferencia bancaria — el 60% de anticipo inicia la producción y el 40% restante lo pagas al momento de la entrega (o antes del envío si es otra ciudad).
@@ -677,12 +697,18 @@ Paso 2: Cuando responda el ancho → recomienda la medida correspondiente Y preg
 Paso 3: Cuando diga dónde va → conecta emocionalmente con ese espacio específico y da el precio con contexto
 Ejemplo paso 3: "Una repisa de 80cm en tu sala se ve increíble — libera la pared y le da ese toque cálido que transforma el espacio. La hacemos en roble macizo con herrajes invisibles y esquinas redondeadas, lista en 5-6 días con instalación incluida. Queda en $260.000 😊"
 
-PARA REPISAS MEDIDA NO ESTANDAR (solo medidas que NO están en la lista de 14 precios):
-RECUERDA: las medidas CON precio son 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180 y 200cm. Para esas das el precio directo, NUNCA escalas. Solo escalas para medidas que NO están en esa lista (ej: 170cm, o más de 200cm).
+PARA REPISAS MEDIDA NO ESTANDAR (solo medidas que NO están en la lista de 15 precios):
+RECUERDA: las medidas CON precio son 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180 y 200cm. Para CUALQUIERA de estas 15 das el precio directo, NUNCA escalas — esto incluye la de 40cm ($180.000) y la de 50cm ($200.000).
+Solo escalas para medidas que NO están en esa lista de 15: por ejemplo 170cm, cualquier medida por debajo de 40cm (35cm, 30cm, etc.), o más de 200cm.
+NUNCA digas "lamentablemente", "no las tenemos en el catálogo", "no manejamos esa medida" ni nada negativo — SIEMPRE en positivo, como si fuera la cosa más normal del mundo: "las hacemos sin problema, en el largo que necesites".
 Ejemplo para una medida sin precio, como 130cm:
 "Perfecto! Las repisas las hacemos en el largo que necesites 😊
 La tuya sería de 130 x 15 x 3.6 cm, en roble macizo, con herrajes invisibles, esquinas redondeadas y bordes suaves.
 Permíteme un momento y te paso el valor exacto. [ESCALAR]"
+Ejemplo para medida pequeña, como 40cm (o dos repisas de 40cm):
+"Perfecto! Las repisas las hacemos en el largo que necesites 😊
+Las tuyas serían de 40 x 15 x 3.6 cm cada una, en roble macizo, con herrajes invisibles, esquinas redondeadas y bordes suaves.
+Permíteme un momento y te paso el valor exacto para las dos. [ESCALAR]"
 
 PARA LA CAMA:
 - Primer mensaje: presentar ambas opciones SIN precio
@@ -1014,6 +1040,10 @@ app.get('/panel/chat', function(req, res) {
   html += '.btn-acciones{background:#8a7f70;color:#fff}';
   html += '.btn-accion-full{width:100%;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:4px}';
   html += '.aviso{font-size:12px;color:#7a7268;text-align:center;margin-top:6px}';
+  html += '.media-img{max-width:100%;border-radius:8px;display:block;cursor:pointer}';
+  html += '.media-audio{max-width:240px}';
+  html += '.media-tag{font-style:italic;color:#5a534b}';
+  html += '.btn-media{flex:1;border:1px solid #cdbfae;background:#fff;color:#5a534b;border-radius:8px;padding:9px 4px;font-size:12px;font-weight:600;cursor:pointer}';
   html += '</style></head><body>';
   html += '<div class="top"><a href="/panel?token=' + CONTROL_TOKEN + '">← Volver a leads</a>';
   html += '<div class="n">+' + escapeHtml(numero) + '</div>';
@@ -1025,7 +1055,21 @@ app.get('/panel/chat', function(req, res) {
   } else {
     conv.forEach(function(m) {
       var clase = m.role === 'user' ? 'lead' : 'lili';
-      html += '<div class="row"><div class="msg ' + clase + '">' + escapeHtml(m.content) + '</div></div>';
+      var contenidoHtml;
+      if (typeof m.content === 'string' && m.content.indexOf('[IMAGEN] ') === 0) {
+        var urlImg = m.content.slice(9);
+        contenidoHtml = '<img src="' + escapeHtml(urlImg) + '" class="media-img" onclick="window.open(this.src)">';
+      } else if (typeof m.content === 'string' && m.content.indexOf('[AUDIO] ') === 0) {
+        var urlAud = m.content.slice(8);
+        contenidoHtml = '<audio controls src="' + escapeHtml(urlAud) + '" class="media-audio"></audio>';
+      } else if (typeof m.content === 'string' && (m.content.indexOf('[Lili envió una imagen]') === 0)) {
+        contenidoHtml = '<span class="media-tag">📷 Imagen enviada</span>';
+      } else if (typeof m.content === 'string' && (m.content.indexOf('[Lili envió un audio]') === 0)) {
+        contenidoHtml = '<span class="media-tag">🎤 Audio enviado</span>';
+      } else {
+        contenidoHtml = escapeHtml(m.content);
+      }
+      html += '<div class="row"><div class="msg ' + clase + '">' + contenidoHtml + '</div></div>';
     });
   }
   html += '</div>';
@@ -1059,6 +1103,12 @@ app.get('/panel/chat', function(req, res) {
   html += '<button class="btn btn-enviar" onclick="enviar(event)">Enviar</button>';
   html += '<button class="btn btn-acciones" onclick="toggleAcciones()">⚙️ Acciones</button>';
   html += '</div>';
+  html += '<div class="fila" style="margin-top:6px">';
+  html += '<button class="btn-media" onclick="document.getElementById(\'archivo-img\').click()">📷 Imagen</button>';
+  html += '<button class="btn-media" onclick="document.getElementById(\'archivo-audio\').click()">🎤 Audio</button>';
+  html += '</div>';
+  html += '<input type="file" id="archivo-img" accept="image/*" style="display:none" onchange="enviarArchivo(this,\'imagen\')">';
+  html += '<input type="file" id="archivo-audio" accept="audio/*" style="display:none" onchange="enviarArchivo(this,\'audio\')">';
   html += '</div>';
 
   html += '<script>';
@@ -1093,6 +1143,15 @@ app.get('/panel/chat', function(req, res) {
   html += 'fetch("/panel/nota",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK,numero:NUM,nota:t})})';
   html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){b.textContent="✓ Nota guardada";setTimeout(function(){b.disabled=false;b.textContent="Guardar nota"},1500)}else{alert("Error");b.disabled=false;b.textContent="Guardar nota"}})';
   html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="Guardar nota"});}';
+  html += 'function enviarArchivo(input,tipo){';
+  html += 'var f=input.files[0];if(!f)return;';
+  html += 'var fd=new FormData();fd.append("archivo",f);fd.append("token",TK);fd.append("numero",NUM);fd.append("tipo",tipo);';
+  html += 'var btn=document.querySelector(tipo==="imagen"?".btn-media":".btn-media:nth-of-type(2)");';
+  html += 'alert("Enviando "+tipo+"... espera un momento 😊");';
+  html += 'fetch("/panel/enviar-archivo",{method:"POST",body:fd})';
+  html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){location.reload()}else{alert("Error: "+(d.error||"no se pudo enviar"))}})';
+  html += '.catch(function(){alert("Error de conexion al enviar el archivo")});';
+  html += 'input.value="";}';
   html += '</script>';
   html += '</body></html>';
   res.send(html);
@@ -1114,6 +1173,42 @@ app.post('/panel/enviar', function(req, res) {
   enviarMensaje(numero, texto);
   console.log('Respuesta manual desde panel a ' + numero);
   res.json({ ok: true });
+});
+
+// Enviar imagen o audio desde el panel directamente al lead por WhatsApp.
+// Se sube a Cloudinary, se manda por la API de Meta, y se guarda una referencia
+// en el historial para que se vea en el panel (no se puede mostrar el archivo
+// real dentro del historial de texto, pero queda claro que se envió).
+app.post('/panel/enviar-archivo', upload.single('archivo'), function(req, res) {
+  if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
+  var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
+  if (!esNumeroValido(numero)) return res.json({ ok: false });
+  if (!req.file) return res.json({ ok: false, error: 'No se recibió ningún archivo' });
+
+  var tipo = req.body.tipo === 'audio' ? 'audio' : 'imagen';
+  var esVideo = tipo === 'audio'; // para Cloudinary, audio se sube como "video"
+
+  subirACloudinary(req.file.buffer, req.file.mimetype, esVideo)
+    .then(function(url) {
+      marcarPausado(numero);
+
+      var envio = tipo === 'audio' ? enviarAudio(numero, url) : enviarImagen(numero, url);
+
+      return envio.then(function() {
+        if (!conversaciones[numero]) conversaciones[numero] = [];
+        var etiqueta = tipo === 'audio' ? '[Lili envió un audio]' : '[Lili envió una imagen]';
+        conversaciones[numero].push({ role: 'assistant', content: etiqueta });
+        if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
+        guardarConversacion(numero);
+        cancelarSeguimiento(numero);
+        console.log((tipo === 'audio' ? 'Audio' : 'Imagen') + ' enviado desde panel a ' + numero);
+        res.json({ ok: true, url: url });
+      });
+    })
+    .catch(function(error) {
+      console.error('Error subiendo/enviando archivo del panel:', error.message);
+      res.json({ ok: false, error: 'No se pudo enviar el archivo' });
+    });
 });
 
 app.post('/panel/marcar', function(req, res) {
@@ -1249,15 +1344,37 @@ app.post('/webhook', function(req, res) {
 
       if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && esNumeroValido(message.from)) {
         var fromMedia = message.from;
-        console.log('Mensaje tipo ' + message.type + ' de ' + fromMedia + ' — respondiendo con texto');
+        console.log('Mensaje tipo ' + message.type + ' de ' + fromMedia + ' — descargando y respondiendo');
 
         if (pausadoTodo || pausados[fromMedia] || procesando[fromMedia]) return;
 
+        var mediaObj = message[message.type]; // message.image, message.audio, etc.
+        var mediaId = mediaObj && mediaObj.id;
+        var esVideoTipo = message.type === 'audio'; // Cloudinary guarda audio como "video"
+
+        // Guardamos primero un marcador genérico (por si la descarga falla o tarda),
+        // y lo actualizamos con la URL real en cuanto la tengamos.
         var textoMedia = '[El cliente envió ' + (message.type === 'image' ? 'una imagen' : message.type === 'audio' ? 'un audio' : 'un archivo') + ']';
         if (!conversaciones[fromMedia]) conversaciones[fromMedia] = [];
+        var indiceMensaje = conversaciones[fromMedia].length;
         conversaciones[fromMedia].push({ role: 'user', content: textoMedia });
-        if (conversaciones[fromMedia].length > 12) conversaciones[fromMedia] = conversaciones[fromMedia].slice(-12);
+        if (conversaciones[fromMedia].length > 12) { conversaciones[fromMedia] = conversaciones[fromMedia].slice(-12); indiceMensaje = conversaciones[fromMedia].length - 1; }
         guardarConversacion(fromMedia);
+
+        if (mediaId) {
+          descargarMediaDeMetaYSubir(mediaId, esVideoTipo).then(function(urlPublica) {
+            var prefijo = message.type === 'image' ? '[IMAGEN]' : message.type === 'audio' ? '[AUDIO]' : '[ARCHIVO]';
+            var contenidoConUrl = prefijo + ' ' + urlPublica;
+            // Actualiza el mensaje en el historial (si todavía está en la posición esperada)
+            if (conversaciones[fromMedia] && conversaciones[fromMedia][indiceMensaje] && conversaciones[fromMedia][indiceMensaje].content === textoMedia) {
+              conversaciones[fromMedia][indiceMensaje].content = contenidoConUrl;
+              guardarConversacion(fromMedia);
+            }
+            console.log('Media del lead guardada con URL: ' + urlPublica);
+          }).catch(function(error) {
+            console.error('Error descargando media del lead:', error.message);
+          });
+        }
 
         procesando[fromMedia] = true;
         setTimeout(function() { procesarMensaje(fromMedia, textoMedia); }, 500);
@@ -1276,9 +1393,44 @@ function procesarMensaje(from, texto) {
   var mencionaRepisa = textoLower.indexOf('repisa') !== -1 || textoLower.indexOf('estante') !== -1 || textoLower.indexOf('shelf') !== -1;
   var esPrimerMensaje = sinRespuestasAgente && mencionaRepisa;
 
+  var systemConContexto = SYSTEM_PROMPT;
+  if (notas[from] && notas[from].trim() !== '') {
+    systemConContexto += '\n\nNOTA PRIVADA DE LILI SOBRE ESTE LEAD (información de contexto, puede venir de audios, fotos, o conversaciones fuera del sistema — tenla en cuenta para tu respuesta y seguimiento):\n"' + notas[from] + '"';
+  }
+
+  // Si el último mensaje del lead es una imagen real (ya descargada y subida a
+  // Cloudinary), se la mandamos a Claude con visión para que pueda "verla" de
+  // verdad, en vez de solo trabajar con el texto genérico "[El cliente envió una imagen]".
+  var esImagenReal = typeof texto === 'string' && texto.indexOf('[IMAGEN] ') === 0;
+
+  var promesaMensajes;
+  if (esImagenReal) {
+    var urlImagenLead = texto.slice(9);
+    promesaMensajes = axios.get(urlImagenLead, { responseType: 'arraybuffer' }).then(function(imgResp) {
+      var base64Img = Buffer.from(imgResp.data).toString('base64');
+      var mediaType = imgResp.headers['content-type'] || 'image/jpeg';
+      // Reemplaza el último mensaje (el marcador de texto) por uno con la imagen real,
+      // sin alterar el historial guardado en la BD — solo para esta llamada a Claude.
+      var historialConImagen = conversaciones[from].slice(0, -1).concat([{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Img } },
+          { type: 'text', text: 'El cliente envió esta imagen por WhatsApp.' }
+        ]
+      }]);
+      return historialConImagen;
+    }).catch(function(error) {
+      console.error('No se pudo cargar la imagen para Claude, sigue con texto:', error.message);
+      return conversaciones[from];
+    });
+  } else {
+    promesaMensajes = Promise.resolve(conversaciones[from]);
+  }
+
+  promesaMensajes.then(function(mensajesParaClaude) {
   axios.post(
     'https://api.anthropic.com/v1/messages',
-    { model: 'claude-haiku-4-5', max_tokens: 600, system: SYSTEM_PROMPT, messages: conversaciones[from] },
+    { model: 'claude-haiku-4-5', max_tokens: 600, system: systemConContexto, messages: mensajesParaClaude },
     { headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' } }
   ).then(function(response) {
     var respuesta = response.data.content[0].text;
@@ -1332,6 +1484,7 @@ function procesarMensaje(from, texto) {
     delete procesando[from];
     enviarMensaje(from, 'Hola! 🙌 Estoy revisando tu mensaje, en un momento te respondo 😊');
   });
+  }); // cierra promesaMensajes.then
 }
 
 const FOTOS = {
@@ -1340,6 +1493,36 @@ const FOTOS = {
   extra_1:      'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781465915/file_00000000cc80720e95b69a0a306ecad4_jx0bhd.png',
   extra_2:      'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000001f2c722faca1ee2a52bc9acd_cpegru.png'
 };
+
+// ─── SUBIDA DE ARCHIVOS DESDE EL PANEL (Cloudinary) ────────────────────────
+// Para que Lili pueda mandar imágenes/audios desde el panel sin saltar a otra app.
+// Necesita un "unsigned upload preset" configurado en Cloudinary (gratis, sin firma).
+function subirACloudinary(buffer, mimetype, esVideo) {
+  var cloudName = CLOUDINARY_CLOUD_NAME || 'dcdn1l8jb';
+  var tipoRecurso = esVideo ? 'video' : 'image'; // Cloudinary usa "video" también para audio
+  var url = 'https://api.cloudinary.com/v1_1/' + cloudName + '/' + tipoRecurso + '/upload';
+
+  var FormData = require('form-data');
+  var form = new FormData();
+  form.append('file', buffer, { filename: 'archivo', contentType: mimetype });
+  form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET || 'panel_unsigned');
+
+  return axios.post(url, form, { headers: form.getHeaders() })
+    .then(function(resp) { return resp.data.secure_url; });
+}
+
+function enviarAudio(to, urlAudio) {
+  return axios.post(
+    'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
+    { messaging_product: 'whatsapp', to: to, type: 'audio', audio: { link: urlAudio } },
+    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
+  ).then(function() {
+    console.log('Audio enviado a ' + to);
+  }).catch(function(error) {
+    console.error('Error audio:', error.response ? JSON.stringify(error.response.data) : error.message);
+  });
+}
+// ─── FIN SUBIDA DE ARCHIVOS ─────────────────────────────────────────────────
 
 function enviarImagen(to, urlFoto, caption) {
   var body = {
@@ -1378,6 +1561,25 @@ function enviarFotosExtra(to) {
     .then(function() {
       return enviarImagen(to, FOTOS.extra_2);
     });
+}
+
+// Descarga un archivo multimedia que el LEAD mandó por WhatsApp (Meta solo da
+// un media_id, hay que pedirle la URL temporal y descargarlo), y lo sube a
+// Cloudinary para tener una URL pública permanente que el panel pueda mostrar.
+function descargarMediaDeMetaYSubir(mediaId, esVideo) {
+  return axios.get(
+    'https://graph.facebook.com/v25.0/' + mediaId,
+    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN } }
+  ).then(function(resp) {
+    var urlTemporal = resp.data.url;
+    var mimetype = resp.data.mime_type || 'application/octet-stream';
+    return axios.get(urlTemporal, {
+      headers: { 'Authorization': 'Bearer ' + META_API_TOKEN },
+      responseType: 'arraybuffer'
+    }).then(function(archivoResp) {
+      return subirACloudinary(Buffer.from(archivoResp.data), mimetype, esVideo);
+    });
+  });
 }
 
 function enviarMensaje(to, texto) {
