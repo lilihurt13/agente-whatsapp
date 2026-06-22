@@ -1,19 +1,48 @@
+require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 const { Pool } = require('pg');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({
+  verify: function(req, res, buf) { req.rawBody = buf; }
+}));
 
 const PORT = process.env.PORT || 3000;
 const META_API_TOKEN = process.env.META_API_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const WEBHOOK_VERIFY_TOKEN = 'hecho_por_lili_2026';
+const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
+const META_APP_SECRET = process.env.META_APP_SECRET;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const CONTROL_TOKEN = 'lili2026';
-const LILI_NUMERO = '573008654636';
-const TELEGRAM_TOKEN = '8868128825:AAFcEjUGckC3YyIjdMWz95Q5XPXDPoPii9M';
-const TELEGRAM_CHAT_ID = '2056034612';
+const CONTROL_TOKEN = process.env.CONTROL_TOKEN;
+const LILI_NUMERO = process.env.LILI_NUMERO;
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// Un numero de WhatsApp siempre es solo digitos. Se usa para validar query
+// params antes de usarlos como clave de objeto o de insertarlos en HTML.
+function esNumeroValido(n) {
+  return typeof n === 'string' && /^\d{5,20}$/.test(n);
+}
+
+// Compara un token recibido contra el esperado. Si el esperado no esta
+// configurado (env var faltante), SIEMPRE falla — nunca deja pasar por "undefined === undefined".
+function tokenValido(provisto, esperado) {
+  return !!esperado && provisto === esperado;
+}
+
+// Verifica que el POST al webhook venga realmente de Meta (HMAC sobre el body crudo).
+function firmaWebhookValida(req) {
+  if (!META_APP_SECRET) return false;
+  var firma = req.get('x-hub-signature-256');
+  if (!firma || !req.rawBody) return false;
+  var esperada = 'sha256=' + crypto.createHmac('sha256', META_APP_SECRET).update(req.rawBody).digest('hex');
+  var bufFirma = Buffer.from(firma);
+  var bufEsperada = Buffer.from(esperada);
+  if (bufFirma.length !== bufEsperada.length) return false;
+  return crypto.timingSafeEqual(bufFirma, bufEsperada);
+}
 
 // ─── BASE DE DATOS POSTGRESQL ──────────────────────────────────────────────
 // Toda la persistencia (conversaciones, pausas, seguimientos) vive aqui, no en
@@ -728,8 +757,9 @@ app.get('/control', function(req, res) {
   var token = req.query.token;
   var cmd = req.query.cmd;
   var numero = req.query.numero;
-  if (token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
+  if (!tokenValido(token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
   if (numero) numero = numero.replace(/[+\s-]/g, '');
+  if (numero && !esNumeroValido(numero)) return res.status(400).send('Numero invalido');
   if (cmd === 'pausatodo') { pausadoTodo = true; guardarPausadoTodo(); return res.send('PAUSADO TODO ✅'); }
   if (cmd === 'todo') { pausadoTodo = false; guardarPausadoTodo(); quitarTodosPausados(); return res.send('REACTIVADO TODO ✅ (incluye números individuales)'); }
   if (cmd === 'resumir') { pausadoTodo = false; guardarPausadoTodo(); return res.send('PAUSA GLOBAL QUITADA ✅ — números individuales siguen pausados'); }
@@ -756,7 +786,7 @@ app.get('/', function(req, res) {
 });
 
 app.get('/reporte', function(req, res) {
-  if (req.query.token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
+  if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
 
   var todos = {};
   Object.keys(conversaciones).forEach(function(n) { if (n !== LILI_NUMERO) todos[n] = true; });
@@ -801,7 +831,7 @@ app.get('/reporte', function(req, res) {
     var lista = cat[estado];
     html += '<div class="cat"><h2>' + etiquetas[estado] + '<span class="count">' + lista.length + '</span></h2>';
     if (lista.length === 0) { html += '<div class="vacio">Ninguno por ahora</div>'; }
-    else { lista.forEach(function(n) { html += '<div class="num">' + n + '</div>'; }); }
+    else { lista.forEach(function(n) { html += '<div class="num">' + escapeHtml(n) + '</div>'; }); }
     html += '</div>';
   });
 
@@ -825,7 +855,7 @@ function estadoLegible(numero) {
 }
 
 app.get('/panel', function(req, res) {
-  if (req.query.token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
+  if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
   var leads = Object.keys(conversaciones).filter(function(n) { return n !== LILI_NUMERO; });
   // Ordenar por última actividad: el lead con quien se habló más recientemente queda arriba
   leads.sort(function(a, b) {
@@ -850,8 +880,8 @@ app.get('/panel', function(req, res) {
   });
 
   function tarjetaLead(n) {
-    var h = '<a class="lead" href="/panel/chat?token=' + CONTROL_TOKEN + '&numero=' + n + '">';
-    h += '<div class="num">+' + n + '</div>';
+    var h = '<a class="lead" href="/panel/chat?token=' + CONTROL_TOKEN + '&numero=' + encodeURIComponent(n) + '">';
+    h += '<div class="num">+' + escapeHtml(n) + '</div>';
     h += '<div class="est">' + estadoLegible(n) + '</div>';
     if (notas[n]) {
       h += '<div class="nota-prev">📝 ' + escapeHtml(notas[n]) + '</div>';
@@ -902,13 +932,14 @@ app.get('/panel', function(req, res) {
 });
 
 app.get('/panel/chat', function(req, res) {
-  if (req.query.token !== CONTROL_TOKEN) return res.status(403).send('No autorizado');
+  if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
   var numero = req.query.numero;
   if (numero) numero = numero.replace(/[+\s-]/g, '');
+  if (!esNumeroValido(numero)) return res.status(400).send('Numero invalido');
   var conv = conversaciones[numero] || [];
 
   var html = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
-  html += '<title>+' + numero + '</title><style>';
+  html += '<title>+' + escapeHtml(numero) + '</title><style>';
   html += 'body{font-family:-apple-system,sans-serif;background:#e5ddd5;margin:0;padding:0;color:#3a342e}';
   html += '.top{background:#3a342e;color:#fff;padding:14px 16px;position:sticky;top:0}';
   html += '.top a{display:inline-block;color:#fff;background:rgba(255,255,255,.15);text-decoration:none;font-size:15px;padding:8px 14px;border-radius:8px;margin-bottom:10px}';
@@ -941,7 +972,7 @@ app.get('/panel/chat', function(req, res) {
   html += '.aviso{font-size:12px;color:#7a7268;text-align:center;margin-top:6px}';
   html += '</style></head><body>';
   html += '<div class="top"><a href="/panel?token=' + CONTROL_TOKEN + '">← Volver a leads</a>';
-  html += '<div class="n">+' + numero + '</div>';
+  html += '<div class="n">+' + escapeHtml(numero) + '</div>';
   html += '<div class="est">' + estadoLegible(numero) + '</div></div>';
   html += '<div class="wrap">';
 
@@ -1028,10 +1059,10 @@ app.get('/panel/chat', function(req, res) {
 });
 
 app.post('/panel/enviar', function(req, res) {
-  if (req.body.token !== CONTROL_TOKEN) return res.status(403).json({ ok: false });
+  if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
   var texto = req.body.texto || '';
-  if (!numero || !texto) return res.json({ ok: false });
+  if (!esNumeroValido(numero) || !texto) return res.json({ ok: false });
 
   marcarPausado(numero);
   if (!conversaciones[numero]) conversaciones[numero] = [];
@@ -1048,11 +1079,11 @@ app.post('/panel/enviar', function(req, res) {
 // Endpoint para marcar un estado de seguimiento desde el panel
 // (cuando Lili envía fotos/cotización/referencias por fuera y quiere avisarle al agente)
 app.post('/panel/marcar', function(req, res) {
-  if (req.body.token !== CONTROL_TOKEN) return res.status(403).json({ ok: false });
+  if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
   var estado = req.body.estado || '';
   var estadosValidos = ['esperando_info', 'esperando_decision', 'cotizacion_enviada'];
-  if (!numero || estadosValidos.indexOf(estado) === -1) return res.json({ ok: false });
+  if (!esNumeroValido(numero) || estadosValidos.indexOf(estado) === -1) return res.json({ ok: false });
 
   // Activar el seguimiento con el estado indicado (resetea timer e intentos)
   seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0 };
@@ -1063,9 +1094,9 @@ app.post('/panel/marcar', function(req, res) {
 
 // Endpoint para guardar la nota privada de un lead
 app.post('/panel/nota', function(req, res) {
-  if (req.body.token !== CONTROL_TOKEN) return res.status(403).json({ ok: false });
+  if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
-  if (!numero) return res.json({ ok: false });
+  if (!esNumeroValido(numero)) return res.json({ ok: false });
   var nota = (req.body.nota || '').slice(0, 1000); // límite de seguridad
   if (nota.trim() === '') { delete notas[numero]; } else { notas[numero] = nota; }
   guardarNota(numero);
@@ -1081,7 +1112,7 @@ app.get('/webhook', function(req, res) {
   var mode = req.query['hub.mode'];
   var token = req.query['hub.verify_token'];
   var challenge = req.query['hub.challenge'];
-  if (mode === 'subscribe' && token === WEBHOOK_VERIFY_TOKEN) {
+  if (mode === 'subscribe' && tokenValido(token, WEBHOOK_VERIFY_TOKEN)) {
     res.status(200).send(challenge);
   } else {
     res.sendStatus(403);
@@ -1089,6 +1120,10 @@ app.get('/webhook', function(req, res) {
 });
 
 app.post('/webhook', function(req, res) {
+  if (!firmaWebhookValida(req)) {
+    console.error('Webhook rechazado: firma invalida o ausente');
+    return res.sendStatus(401);
+  }
   res.sendStatus(200);
   try {
     var entry = req.body.entry;
@@ -1104,7 +1139,7 @@ app.post('/webhook', function(req, res) {
 
       if (esSaliente && message.type === 'text') {
         var leadNumero = message.to || null;
-        if (leadNumero) {
+        if (leadNumero && esNumeroValido(leadNumero)) {
           marcarPausado(leadNumero);
           console.log('Lili escribió a ' + leadNumero + ' — número pausado automáticamente');
           if (!conversaciones[leadNumero]) conversaciones[leadNumero] = [];
@@ -1120,7 +1155,7 @@ app.post('/webhook', function(req, res) {
         return;
       }
 
-      if (message && message.type === 'text') {
+      if (message && message.type === 'text' && esNumeroValido(message.from)) {
         var from = message.from;
         var texto = message.text.body;
         console.log('Mensaje de ' + from + ': ' + texto);
@@ -1150,7 +1185,7 @@ app.post('/webhook', function(req, res) {
       }
 
       // Manejo de mensajes de imagen/video/audio — Olivia no puede verlos pero responde
-      if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document')) {
+      if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && esNumeroValido(message.from)) {
         var fromMedia = message.from;
         console.log('Mensaje tipo ' + message.type + ' de ' + fromMedia + ' — respondiendo con texto');
 

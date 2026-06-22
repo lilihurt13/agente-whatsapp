@@ -17,10 +17,8 @@ npm install
 ## ⚙️ Configuración
 
 1. Copia `.env.example` a `.env`
-2. Llena tus credenciales:
-   - `META_API_TOKEN`: Token de acceso de Meta
-   - `PHONE_NUMBER_ID`: ID de tu número WhatsApp
-   - `WABA_ID`: ID de workspace
+2. Llena tus credenciales (ver `.env.example` para la lista completa: `META_API_TOKEN`, `PHONE_NUMBER_ID`, `WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `CONTROL_TOKEN`, `LILI_NUMERO`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`)
+3. Ninguno de estos valores debe quedar escrito en el código — todos se leen de variables de entorno. En Railway se configuran en la pestaña *Variables* del servicio.
 
 ## ▶️ Ejecutar
 
@@ -31,9 +29,9 @@ npm start
 ## 🔗 Webhook en Meta
 
 **URL**: `https://hospitable-appreciation-production-8e5b.up.railway.app/webhook`
-**Token**: `hecho_por_lili_2026`
+**Token**: el valor que configures en `WEBHOOK_VERIFY_TOKEN`
 
-Configura esto en Meta Developers → Tu App → Webhooks
+Configura esto en Meta Developers → Tu App → Webhooks. Además, copia el **App Secret** de tu app (Configuración → Básica) en la variable `META_APP_SECRET` — el servidor lo usa para verificar que cada mensaje entrante venga realmente de Meta.
 
 ## 📝 Estructura
 
