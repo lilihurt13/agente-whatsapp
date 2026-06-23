@@ -57,6 +57,24 @@ const procesando = {};
 let pausadoTodo = false;
 let bdLista = false;
 
+async function crearIndices() {
+  var indices = [
+    { nombre: 'idx_conversaciones_numero', sql: 'CREATE INDEX IF NOT EXISTS idx_conversaciones_numero ON conversaciones(numero)' },
+    { nombre: 'idx_seguimientos_numero',   sql: 'CREATE INDEX IF NOT EXISTS idx_seguimientos_numero ON seguimientos(numero)' },
+    { nombre: 'idx_pausados_numero',       sql: 'CREATE INDEX IF NOT EXISTS idx_pausados_numero ON pausados(numero)' },
+    { nombre: 'idx_notas_numero',          sql: 'CREATE INDEX IF NOT EXISTS idx_notas_numero ON notas(numero)' }
+  ];
+
+  for (var i = 0; i < indices.length; i++) {
+    try {
+      await pool.query(indices[i].sql);
+      console.log('Índice listo: ' + indices[i].nombre);
+    } catch (e) {
+      console.error('Error creando índice ' + indices[i].nombre + ':', e.message);
+    }
+  }
+}
+
 async function inicializarBD() {
   try {
     await pool.query('CREATE TABLE IF NOT EXISTS conversaciones (numero TEXT PRIMARY KEY, mensajes JSONB NOT NULL DEFAULT \'[]\')');
@@ -64,6 +82,8 @@ async function inicializarBD() {
     await pool.query('CREATE TABLE IF NOT EXISTS seguimientos (numero TEXT PRIMARY KEY, estado TEXT NOT NULL, timestamp BIGINT NOT NULL, intentos INT NOT NULL DEFAULT 0, ultimo_mensaje_lead BIGINT)');
     await pool.query('CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)');
     await pool.query('CREATE TABLE IF NOT EXISTS notas (numero TEXT PRIMARY KEY, nota TEXT)');
+
+    await crearIndices();
 
     var rc = await pool.query('SELECT numero, mensajes FROM conversaciones');
     var baseT = Date.now();
