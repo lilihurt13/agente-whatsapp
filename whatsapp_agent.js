@@ -1338,7 +1338,23 @@ app.post('/webhook', function(req, res) {
     if (!entry) return;
     var value = entry[0].changes[0].value;
     if (!value) return;
-    if (value.statuses) { return; }
+
+    // ANTES esto se ignoraba por completo. Meta manda aquí si un mensaje
+    // realmente se entregó, se leyó, o FALLÓ (ej: ventana de 24h vencida).
+    // Si un mensaje falla, lo registramos en consola Y le avisamos a Lili
+    // por Telegram/WhatsApp, porque hasta ahora ese fallo quedaba invisible
+    // — el panel decía "enviado" pero el lead nunca lo recibía.
+    if (value.statuses) {
+      value.statuses.forEach(function(st) {
+        if (st.status === 'failed') {
+          var numeroFallido = st.recipient_id || 'desconocido';
+          var razonFallo = (st.errors && st.errors[0] && st.errors[0].title) || 'razón desconocida';
+          console.error('⚠️ MENSAJE FALLÓ a ' + numeroFallido + ': ' + razonFallo);
+          notificarLili(numeroFallido, 'Un mensaje NO se pudo entregar (' + razonFallo + '). Revisa este lead — puede que la ventana de 24h esté vencida o haya otro problema.');
+        }
+      });
+      return;
+    }
 
     if (value.messages) {
       var message = value.messages[0];
