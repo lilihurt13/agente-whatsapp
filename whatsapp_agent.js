@@ -111,6 +111,24 @@ async function inicializarBD() {
     var rn = await pool.query('SELECT numero, nota FROM notas');
     rn.rows.forEach(function(row) { if (row.nota) notas[row.numero] = row.nota; });
 
+    // ═══════════════════════════════════════════════════════════════════
+    // 🧹 LIMPIEZA (24 jun): el número personal de Lili NUNCA debe quedar
+    // registrado en seguimientos ni en pausados. Las protecciones en
+    // activarSeguimiento() y marcarPausado() evitan que se cree un registro
+    // NUEVO, pero si ya existía uno ANTES de esas protecciones (guardado en
+    // Postgres), seguía ahí y los cronjobs de seguimiento/reactivación lo
+    // seguían procesando. Esta limpieza corre una sola vez en cada arranque
+    // del servidor y borra cualquier rastro viejo, en memoria y en la BD.
+    // Es seguro ejecutarla siempre, incluso si no hay nada que borrar.
+    // ═══════════════════════════════════════════════════════════════════
+    if (LILI_NUMERO) {
+      delete seguimientos[LILI_NUMERO];
+      delete pausados[LILI_NUMERO];
+      await pool.query('DELETE FROM seguimientos WHERE numero = $1', [LILI_NUMERO]);
+      await pool.query('DELETE FROM pausados WHERE numero = $1', [LILI_NUMERO]);
+      console.log('🧹 Limpieza de arranque: LILI_NUMERO (' + LILI_NUMERO + ') removido de seguimientos y pausados, si existía');
+    }
+
     bdLista = true;
     console.log('BD lista: ' + rc.rows.length + ' conversaciones, ' + rp.rows.length + ' pausados, ' + rs.rows.length + ' seguimientos');
   } catch (e) {
@@ -796,7 +814,30 @@ IMPORTANTE: [ESCALAR] es interno, el sistema lo elimina del mensaje al cliente y
 
 TIEMPO: NUNCA digas "en un momento" para cotizaciones — puede tomar horas o dias.`;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔧 FIX (25 jun): notificarLili() causaba el loop de 50+ mensajes a Telegram.
+// El problema: esta función intentaba avisar por DOS canales (Telegram Y
+// WhatsApp). Cuando un mensaje fallaba en entregarse a LILI_NUMERO (ventana de
+// 24h cerrada), Meta disparaba un evento "failed" que llamaba a notificarLili,
+// la cual intentaba avisar por WhatsApp a ese MISMO número — ese intento
+// también fallaba, generando OTRO evento "failed", que volvía a llamar a
+// notificarLili, en un ciclo que se alimentaba a sí mismo indefinidamente.
+// Fix: SOLO Telegram (no tiene restricción de ventana de 24h, así que no
+// puede fallar por esa razón y no puede retroalimentar el loop) + 
+// deduplicación para que, aunque algo dispare varias notificaciones seguidas
+// para el mismo número en poco tiempo, solo se manden una vez cada 5 minutos.
+// ═══════════════════════════════════════════════════════════════════════════
+const notificacionesRecientes = {};
+
 function notificarLili(from, motivo) {
+  var clave = 'notif_' + from;
+  var ahora = Date.now();
+  if (notificacionesRecientes[clave] && (ahora - notificacionesRecientes[clave]) < 5 * 60 * 1000) {
+    console.log('⏭️ Notificación duplicada ignorada para ' + from + ' (ya se envió hace menos de 5 min)');
+    return;
+  }
+  notificacionesRecientes[clave] = ahora;
+
   var mensaje = '🔔 LEAD NECESITA TU ATENCION\n\nNumero: ' + from + '\nSolicitud: ' + motivo + '\n\nRevisa la conversacion y responde cuando puedas 👍';
 
   axios.post(
@@ -806,16 +847,6 @@ function notificarLili(from, motivo) {
     console.log('Notificacion Telegram enviada a Lili sobre ' + from);
   }).catch(function(error) {
     console.error('Error notificando Telegram:', error.response ? JSON.stringify(error.response.data) : error.message);
-  });
-
-  axios.post(
-    'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
-    { messaging_product: 'whatsapp', to: LILI_NUMERO, type: 'text', text: { body: mensaje } },
-    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
-  ).then(function() {
-    console.log('Notificacion WhatsApp enviada a Lili sobre ' + from);
-  }).catch(function(error) {
-    console.error('Error notificando WhatsApp:', error.message);
   });
 }
 
@@ -1672,35 +1703,4 @@ function enviarFotosExtra(to) {
 function descargarMediaDeMetaYSubir(mediaId, esVideo) {
   return axios.get(
     'https://graph.facebook.com/v25.0/' + mediaId,
-    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN } }
-  ).then(function(resp) {
-    var urlTemporal = resp.data.url;
-    var mimetype = resp.data.mime_type || 'application/octet-stream';
-    return axios.get(urlTemporal, {
-      headers: { 'Authorization': 'Bearer ' + META_API_TOKEN },
-      responseType: 'arraybuffer'
-    }).then(function(archivoResp) {
-      return subirACloudinary(Buffer.from(archivoResp.data), mimetype, esVideo);
-    });
-  });
-}
-
-function enviarMensaje(to, texto) {
-  return axios.post(
-    'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
-    { messaging_product: 'whatsapp', to: to, type: 'text', text: { body: texto } },
-    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
-  ).then(function() {
-    console.log('Mensaje enviado a ' + to);
-  }).catch(function(error) {
-    console.error('Error mensaje:', error.message);
-  });
-}
-
-inicializarBD().then(function() {
-  app.listen(PORT, function() {
-    console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
-  });
-});
-
-module.exports = app;
+    { headers: { 'Authorization':
