@@ -254,7 +254,27 @@ function leadPrometioInfo(texto) {
   return false;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔧 FIX (24 jun): activarSeguimiento ahora protege LILI_NUMERO.
+// Antes, cuando un lead escalaba y el mensaje de Lili (desde su número
+// personal) pasaba por el flujo de "mensaje saliente" o por cualquier otro
+// camino que llamara activarSeguimiento() con su propio número, Lili quedaba
+// registrada como si fuera un lead. Los cronjobs de seguimiento/reactivación
+// (que corren cada hora) entonces intentaban mandarle mensajes de seguimiento
+// a su número personal — y como ese número no tiene la ventana de 24h abierta
+// con la plantilla correcta, Meta rechazaba el envío, lo cual disparaba
+// notificarLili() en bucle (ver el fix de notificarLili más abajo).
+// Esta única protección corta el problema de raíz: el número de Lili nunca
+// puede entrar al objeto `seguimientos`, sin importar desde dónde se llame
+// esta función.
+// ═══════════════════════════════════════════════════════════════════════════
 function activarSeguimiento(numero, estado) {
+  // PROTECCIÓN: Lili NUNCA puede quedar registrada como lead en seguimiento
+  if (numero === LILI_NUMERO) {
+    console.log('⏹️ Ignorando activación de seguimiento para Lili (' + numero + ') — su número no es un lead');
+    return;
+  }
+
   if (seguimientos[numero] &&
       (seguimientos[numero].estado === 'cerrado_venta' ||
        seguimientos[numero].estado === 'cerrado_perdido')) return;
@@ -1673,7 +1693,7 @@ function enviarMensaje(to, texto) {
   ).then(function() {
     console.log('Mensaje enviado a ' + to);
   }).catch(function(error) {
-    console.error('Error mensaje:', error.response ? JSON.stringify(error.response.data) : error.message);
+    console.error('Error mensaje:', error.message);
   });
 }
 
