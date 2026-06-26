@@ -349,10 +349,10 @@ setInterval(function() {
 
         if (mensaje) {
           quitarPausado(numero);
-          enviarMensaje(numero, mensaje);
+          enviarPlantilla(numero, 'seguimiento_repisa', 'es_CO');
           seg.timestamp = Date.now();
           guardarSeguimiento(numero);
-          console.log('Seguimiento enviado a ' + numero + ' (intento ' + seg.intentos + ', estado: ' + seg.estado + ')');
+          console.log('Seguimiento (plantilla) enviado a ' + numero + ' (intento ' + seg.intentos + ', estado: ' + seg.estado + ')');
         }
       } else {
         seguimientos[numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: seg.intentos };
@@ -411,10 +411,10 @@ setInterval(function() {
       if (pausados[c.numero]) return;
       c.seg.intentos++;
       if (c.seg.intentos <= 2) {
-        enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos));
+        enviarPlantilla(c.numero, 'seguimiento_repisa', 'es_CO');
         c.seg.timestamp = Date.now();
         guardarSeguimiento(c.numero);
-        console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
+        console.log('Reactivación (plantilla) enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
       } else {
         seguimientos[c.numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: c.seg.intentos };
         guardarSeguimiento(c.numero);
@@ -1713,6 +1713,33 @@ function descargarMediaDeMetaYSubir(mediaId, esVideo) {
     }).then(function(archivoResp) {
       return subirACloudinary(Buffer.from(archivoResp.data), mimetype, esVideo);
     });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔧 NUEVO (25 jun): envío de plantillas aprobadas por Meta.
+// A diferencia de enviarMensaje() (texto libre, que SOLO funciona dentro de la
+// ventana de 24h desde el último mensaje del lead), las plantillas SÍ pueden
+// reabrir la conversación aunque hayan pasado días. Se usa específicamente
+// para los seguimientos automáticos (cron de cada hora y la reactivación de
+// 12pm/7pm), que son mensajes "en frío" donde no sabemos si la ventana sigue
+// abierta. Una vez el lead responde a la plantilla, la ventana de 24h se
+// reabre y Olivia puede volver a usar texto libre normalmente.
+// ═══════════════════════════════════════════════════════════════════════════
+function enviarPlantilla(to, nombrePlantilla, codigoIdioma) {
+  return axios.post(
+    'https://graph.facebook.com/v25.0/' + PHONE_NUMBER_ID + '/messages',
+    {
+      messaging_product: 'whatsapp',
+      to: to,
+      type: 'template',
+      template: { name: nombrePlantilla, language: { code: codigoIdioma || 'es' } }
+    },
+    { headers: { 'Authorization': 'Bearer ' + META_API_TOKEN, 'Content-Type': 'application/json' } }
+  ).then(function() {
+    console.log('Plantilla "' + nombrePlantilla + '" enviada a ' + to);
+  }).catch(function(error) {
+    console.error('Error enviando plantilla:', error.response ? JSON.stringify(error.response.data) : error.message);
   });
 }
 
