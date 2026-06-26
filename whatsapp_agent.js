@@ -964,10 +964,16 @@ app.get('/panel', function(req, res) {
 
   var mios = [];
   var deOlivia = [];
+  var ventas = [];
+  var perdidos = [];
   leads.forEach(function(n) {
     var seg = seguimientos[n];
-    var cerrado = seg && (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido');
-    if (pausados[n] && !cerrado) {
+    if (seg && seg.estado === 'cerrado_venta') { ventas.push(n); return; }
+    // "Perdidos" agrupa los dos casos en los que ya no se sigue insistiendo:
+    // cerrado_perdido = tú lo marcaste manualmente como "no va a comprar"
+    // cerrado_sin_respuesta = Olivia hizo 2 intentos de seguimiento y nadie respondió
+    if (seg && (seg.estado === 'cerrado_perdido' || seg.estado === 'cerrado_sin_respuesta')) { perdidos.push(n); return; }
+    if (pausados[n]) {
       mios.push(n);
     } else {
       deOlivia.push(n);
@@ -1015,8 +1021,8 @@ app.get('/panel', function(req, res) {
   html += '<title>Panel — Hecho por Lili</title><style>';
   html += 'body{font-family:-apple-system,sans-serif;background:#f5f3ef;margin:0;padding:16px;color:#3a342e}';
   html += 'h1{font-size:20px;margin-bottom:12px}';
-  html += '.tabs{display:flex;gap:8px;margin-bottom:16px}';
-  html += '.tab{flex:1;text-align:center;padding:12px 8px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;background:#e8e3db;color:#7a7268;border:none}';
+  html += '.tabs{display:flex;gap:8px;margin-bottom:16px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px}';
+  html += '.tab{flex:0 0 auto;white-space:nowrap;text-align:center;padding:12px 14px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;background:#e8e3db;color:#7a7268;border:none}';
   html += '.tab.activa{background:#3a342e;color:#fff}';
   html += '.lead{display:block;background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:10px;text-decoration:none;color:#3a342e;box-shadow:0 1px 3px rgba(0,0,0,.06)}';
   html += '.num{font-family:monospace;font-size:15px;font-weight:600}';
@@ -1040,11 +1046,15 @@ app.get('/panel', function(req, res) {
   html += '<div class="tabs">';
   html += '<button class="tab activa" id="tab-mios" onclick="verGrupo(\'mios\')">🔵 Atendiendo yo (' + mios.length + ')</button>';
   html += '<button class="tab" id="tab-olivia" onclick="verGrupo(\'olivia\')">🟢 Olivia maneja (' + deOlivia.length + ')</button>';
+  html += '<button class="tab" id="tab-ventas" onclick="verGrupo(\'ventas\')">✅ Ventas (' + ventas.length + ')</button>';
+  html += '<button class="tab" id="tab-perdidos" onclick="verGrupo(\'perdidos\')">❌ Perdidos (' + perdidos.length + ')</button>';
   html += '<button class="tab" id="tab-frios" onclick="verGrupo(\'frios\')">❄️ Fríos (' + frios.length + ')</button>';
   html += '</div>';
 
   html += '<div class="grupo activo" id="grupo-mios">' + listaGrupo(mios, false) + '</div>';
   html += '<div class="grupo" id="grupo-olivia">' + listaGrupo(deOlivia, false) + '</div>';
+  html += '<div class="grupo" id="grupo-ventas">' + listaGrupo(ventas, false) + '</div>';
+  html += '<div class="grupo" id="grupo-perdidos">' + listaGrupo(perdidos, false) + '</div>';
 
   html += '<div class="grupo" id="grupo-frios">';
   html += '<div class="barra-frios">';
@@ -1061,12 +1071,11 @@ app.get('/panel', function(req, res) {
   html += '<script>';
   html += 'var TK_PANEL="' + CONTROL_TOKEN + '";';
   html += 'function verGrupo(g){';
-  html += 'document.getElementById("grupo-mios").className = g==="mios" ? "grupo activo" : "grupo";';
-  html += 'document.getElementById("grupo-olivia").className = g==="olivia" ? "grupo activo" : "grupo";';
-  html += 'document.getElementById("grupo-frios").className = g==="frios" ? "grupo activo" : "grupo";';
-  html += 'document.getElementById("tab-mios").className = g==="mios" ? "tab activa" : "tab";';
-  html += 'document.getElementById("tab-olivia").className = g==="olivia" ? "tab activa" : "tab";';
-  html += 'document.getElementById("tab-frios").className = g==="frios" ? "tab activa" : "tab";';
+  html += 'var grupos=["mios","olivia","ventas","perdidos","frios"];';
+  html += 'grupos.forEach(function(x){';
+  html += 'document.getElementById("grupo-"+x).className = g===x ? "grupo activo" : "grupo";';
+  html += 'document.getElementById("tab-"+x).className = g===x ? "tab activa" : "tab";';
+  html += '});';
   html += '}';
   html += 'function actualizarContador(){';
   html += 'var n=document.querySelectorAll(".chk-frio:checked").length;';
