@@ -411,10 +411,14 @@ setInterval(function() {
       if (pausados[c.numero]) return;
       c.seg.intentos++;
       if (c.seg.intentos <= 2) {
-        enviarPlantilla(c.numero, 'seguimiento_repisa', 'es_CO');
+        // Este cron filtra explícitamente leads entre 3-24h desde su último mensaje
+        // (ver el filtro "horasDesde >= 3 && horasDesde <= 24" más arriba), así que
+        // SIEMPRE está dentro de la ventana de 24h — no necesita plantilla, texto
+        // libre funciona bien y permite el mensaje personalizado de mensajeReactivacion().
+        enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos));
         c.seg.timestamp = Date.now();
         guardarSeguimiento(c.numero);
-        console.log('Reactivación (plantilla) enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
+        console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
       } else {
         seguimientos[c.numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: c.seg.intentos };
         guardarSeguimiento(c.numero);
@@ -1187,6 +1191,8 @@ app.get('/panel/chat', function(req, res) {
   } else {
     html += '<button class="btn-accion-full btn-agente" onclick="agente(\'pausa\')">⏸️ Pausar agente (atiendo yo)</button>';
   }
+  html += '<div class="marcar-titulo">Si lleva más de 24h sin escribirte y necesitas reabrir la conversación:</div>';
+  html += '<button class="btn-accion-full" style="background:#d9a04a;color:#fff" onclick="dispararPlantilla(event)">📨 Enviar plantilla de reapertura</button>';
   html += '<div class="marcar-titulo">Avisarle al agente que ya enviaste (por WhatsApp):</div>';
   html += '<div class="fila-marcar">';
   html += '<button class="btn-marcar" onclick="marcar(\'esperando_decision\',event)">📸 Fotos enviadas</button>';
@@ -1227,6 +1233,12 @@ app.get('/panel/chat', function(req, res) {
   html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){location.reload()}else{alert("Error al enviar");b.disabled=false;b.textContent="Enviar"}})';
   html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="Enviar"});}';
   html += 'function agente(cmd){fetch("/control?cmd="+cmd+"&numero="+NUM+"&token="+TK).then(function(){location.reload()});}';
+  html += 'function dispararPlantilla(e){';
+  html += 'if(!confirm("¿Enviar la plantilla de reapertura a +"+NUM+"? Úsala solo si lleva más de 24h sin escribirte. Cuando responda, Olivia sigue la conversación con el contexto normal."))return;';
+  html += 'var b=e.target;b.disabled=true;b.textContent="Enviando...";';
+  html += 'fetch("/panel/enviar-plantilla",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK,numero:NUM})})';
+  html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){location.reload()}else{alert("Error al enviar la plantilla");b.disabled=false;b.textContent="📨 Enviar plantilla de reapertura"}})';
+  html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="📨 Enviar plantilla de reapertura"});}';
   html += 'function marcar(estado,e){';
   html += 'var b=e.target;var orig=b.textContent;b.disabled=true;b.textContent="✓ Listo";';
   html += 'fetch("/panel/marcar",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK,numero:NUM,estado:estado})})';
@@ -1335,6 +1347,29 @@ app.post('/panel/marcar', function(req, res) {
   guardarSeguimiento(numero);
   console.log('Estado marcado desde panel para ' + numero + ': ' + estado);
   res.json({ ok: true });
+});
+
+// Disparo manual de la plantilla de reapertura, para cuando Lili necesita más
+// de 24h para preparar algo (cotización, fotos) y quiere "tocar la puerta" de
+// un lead específico sin esperar al cron automático. No cambia el estado de
+// seguimiento ni pausa el número — solo reabre la ventana; cuando el lead
+// responda, Olivia sigue con el contexto normal de la conversación.
+app.post('/panel/enviar-plantilla', function(req, res) {
+  if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
+  var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
+  if (!esNumeroValido(numero)) return res.json({ ok: false });
+
+  enviarPlantilla(numero, 'seguimiento_repisa', 'es_CO').then(function() {
+    if (!conversaciones[numero]) conversaciones[numero] = [];
+    conversaciones[numero].push({ role: 'assistant', content: '[Lili reabrió la conversación con la plantilla de WhatsApp]' });
+    if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
+    guardarConversacion(numero);
+    console.log('Plantilla disparada manualmente desde panel a ' + numero);
+    res.json({ ok: true });
+  }).catch(function(error) {
+    console.error('Error disparando plantilla manual:', error.message);
+    res.json({ ok: false });
+  });
 });
 
 app.post('/panel/nota', function(req, res) {
