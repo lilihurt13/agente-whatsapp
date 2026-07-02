@@ -130,6 +130,7 @@ async function inicializarBD() {
     }
 
     bdLista = true;
+    verificarModoCampana(); // Log en arranque para confirmar qué modo está activo
     console.log('BD lista: ' + rc.rows.length + ' conversaciones, ' + rp.rows.length + ' pausados, ' + rs.rows.length + ' seguimientos');
   } catch (e) {
     console.error('Error inicializando BD:', e.message);
@@ -435,7 +436,127 @@ setInterval(function() {
 
 }, 60 * 60 * 1000);
 
-const SYSTEM_PROMPT = `Eres Olivia, parte del equipo de Hecho por Lili, una marca de muebles artesanales en roble natural en Medellin, Colombia, fundada por la diseñadora Lili Hurtado. Acompañas a los clientes en WhatsApp: les das información, los asesoras sobre los muebles y los espacios, y cuando hace falta atención personal o algo se sale de lo que sabes, pasas la conversación a Lili.
+// ═══════════════════════════════════════════════════════════════════════════
+// 🎯 CAMPAÑA "JULIO DE ROBLE" — 2 al 20 de julio de 2026
+// Esta función determina si la campaña está activa basándose en la fecha
+// actual en zona horaria Colombia (UTC-5). Después del 20 de julio a las
+// 23:59 COT, todo vuelve automáticamente a los precios y saludo originales
+// sin ninguna intervención manual.
+// ═══════════════════════════════════════════════════════════════════════════
+function esCampanaActiva() {
+  // Hora actual en Colombia (UTC-5)
+  var ahoraUTC = new Date();
+  var ahoraColombia = new Date(ahoraUTC.getTime() - 5 * 60 * 60 * 1000);
+  // La campaña termina al final del 20 de julio de 2026 (Colombia)
+  var finCampana = new Date('2026-07-21T05:00:00.000Z'); // 21-jul 00:00 COT = 05:00 UTC
+  return ahoraUTC < finCampana;
+}
+
+// Función de verificación para pruebas — simula la fecha y muestra qué
+// modo está activo. Accesible desde los logs al arrancar.
+function verificarModoCampana() {
+  var activa = esCampanaActiva();
+  console.log('🎯 Modo campaña "Julio de Roble": ' + (activa ? 'ACTIVO — precios promocionales' : 'INACTIVO — precios normales'));
+  return activa;
+}
+
+function getSystemPrompt() {
+  var campana = esCampanaActiva();
+
+  // ─── TABLA DE PRECIOS ───────────────────────────────────────────────────
+  var tablaPrecios = campana
+    ? `  40cm  → $153.000 (2 soportes)
+  50cm  → $170.000 (2 soportes)
+  60cm  → $175.000 (2 soportes) ← precio gancho del anuncio
+  70cm  → $192.000 (2 soportes)
+  80cm  → $205.000 (2 soportes)
+  90cm  → $240.000 (2 soportes)
+  100cm → $255.000 (2 soportes)
+  110cm → $340.000 (3 soportes)
+  120cm → $280.000 (3 soportes)
+  130cm → $296.000 (3 soportes)
+  140cm → $304.000 (3 soportes)
+  150cm → $320.000 (4 soportes)
+  160cm → $335.000 (4 soportes)
+  180cm → $352.000 (4 soportes)
+  200cm → $365.000 (4 soportes)`
+    : `  40cm  → $180.000 (2 soportes)
+  50cm  → $200.000 (2 soportes)
+  60cm  → $220.000 (2 soportes) ← precio gancho del anuncio
+  70cm  → $240.000 (2 soportes)
+  80cm  → $260.000 (2 soportes)
+  90cm  → $300.000 (2 soportes)
+  100cm → $320.000 (2 soportes)
+  110cm → $340.000 (3 soportes)
+  120cm → $350.000 (3 soportes)
+  130cm → $370.000 (3 soportes)
+  140cm → $380.000 (3 soportes)
+  150cm → $400.000 (4 soportes)
+  160cm → $420.000 (4 soportes)
+  180cm → $440.000 (4 soportes)
+  200cm → $460.000 (4 soportes)`;
+
+  // ─── PRECIO ANCLA 60CM ──────────────────────────────────────────────────
+  var precio60 = campana ? '$175.000' : '$220.000';
+
+  // ─── SALUDO INICIAL ─────────────────────────────────────────────────────
+  var saludoInicial = campana
+    ? `"¡Hola! 👋 Gracias por escribirnos. Este mes tenemos una promoción especial — nuestras repisas flotantes en roble natural están con 20% de descuento hasta el 20 de julio. La de 60 cm, por ejemplo, está en $175.000 (instalación incluida en Medellín). ¿Qué medida necesitas o en qué espacio la quieres poner? 😊"`
+    : `"¡Hola! 👋 Soy Olivia, del equipo de Hecho por Lili 🌿
+
+Hacemos repisas flotantes en roble natural — herrajes invisibles, esquinas redondeadas, bordes suaves e instalación incluida en Medellín. La de 60cm queda en $220.000.
+
+¿Esta medida te funciona o necesitas otra? Cuéntame el espacio y te doy el valor exacto 😊"`;
+
+  // ─── PASO 1 DEL FLUJO DE REPISAS ────────────────────────────────────────
+  var paso1Repisa = campana
+    ? `PASO 1 — Saludo + ancla en 60cm + pregunta medida:
+Cuando llegue cualquier lead de repisa (sin importar cómo pregunte), el sistema envía automáticamente DOS fotos del producto, y luego tú respondes SIEMPRE con este mensaje EXACTO:
+
+"¡Hola! 👋 Gracias por escribirnos. Este mes tenemos una promoción especial — nuestras repisas flotantes en roble natural están con 20% de descuento hasta el 20 de julio. La de 60 cm, por ejemplo, está en $175.000 (instalación incluida en Medellín). ¿Qué medida necesitas o en qué espacio la quieres poner? 😊"
+
+NUNCA menciones el uso específico (TV, baño, sala, etc.) en este primer mensaje.
+NUNCA listes otras medidas en este primer mensaje.
+NUNCA alargues este mensaje con más información.`
+    : `PASO 1 — Saludo + ancla en 60cm + pregunta medida:
+Cuando llegue cualquier lead de repisa (sin importar cómo pregunte), el sistema envía automáticamente DOS fotos del producto, y luego tú respondes SIEMPRE con este mensaje EXACTO:
+
+"¡Hola! 👋 Soy Olivia, del equipo de Hecho por Lili 🌿
+
+Hacemos repisas flotantes en roble natural — herrajes invisibles, esquinas redondeadas, bordes suaves e instalación incluida en Medellín. La de 60cm queda en $220.000.
+
+¿Esta medida te funciona o necesitas otra? Cuéntame el espacio y te doy el valor exacto 😊"
+
+NUNCA menciones el uso específico (TV, baño, sala, etc.) en este primer mensaje.
+NUNCA listes otras medidas en este primer mensaje.
+NUNCA alargues este mensaje con más información.`;
+
+  // ─── PASO 2 CONFIRMACIÓN 60CM ────────────────────────────────────────────
+  var paso2Repisa = campana
+    ? `PASO 2 — Lead confirma la de 60cm → pre-cierre:
+Si el lead dice que sí le sirve la de 60cm, responde:
+"Perfecto 😊 Tu repisa de 60cm en roble macizo, lista en 5-6 días con instalación incluida en Medellín, aprovechando el precio promocional de $175.000 hasta el 20 de julio. ¿Arrancamos?"
+NO pidas dirección ni datos de pago todavía.`
+    : `PASO 2 — Lead confirma la de 60cm → pre-cierre:
+Si el lead dice que sí le sirve la de 60cm, responde:
+"Perfecto 😊 Tu repisa de 60cm en roble macizo, lista en 5-6 días con instalación incluida en Medellín. ¿Arrancamos?"
+NO pidas dirección ni datos de pago todavía.`;
+
+  // ─── REGLAS EXTRA CAMPAÑA ────────────────────────────────────────────────
+  var reglasCampana = campana
+    ? `
+CAMPAÑA JULIO DE ROBLE — REGLAS ACTIVAS HASTA EL 20 DE JULIO:
+- SIEMPRE da el precio promocional directamente, NUNCA menciones el precio original
+- Si el cliente pregunta si hay descuento, confirma: "Sí, tenemos promoción Julio de Roble con 20% de descuento hasta el 20 de julio 😊"
+- Si el cliente pide tiempo para decidir o dice "lo pienso", menciona con naturalidad que la promoción vence el 20 de julio. Ejemplo: "Claro que sí 😊 Cuéntame si surge alguna duda — recuerda que el precio promocional está disponible hasta el 20 de julio 🌿"
+- Las repisas de 40cm y 50cm tienen 15% de descuento (no 20%) — mencionarlo SOLO si el cliente pregunta específicamente por el porcentaje de descuento
+- Instalación incluida en Medellín sigue igual que siempre
+- Anticipo 60% para arrancar, 40% contra entrega sigue igual que siempre
+- NUNCA menciones el precio original junto al promocional ("antes valía X, ahora Y") — solo el precio actual
+`
+    : '';
+
+  return `Eres Olivia, parte del equipo de Hecho por Lili, una marca de muebles artesanales en roble natural en Medellin, Colombia, fundada por la diseñadora Lili Hurtado. Acompañas a los clientes en WhatsApp: les das información, los asesoras sobre los muebles y los espacios, y cuando hace falta atención personal o algo se sale de lo que sabes, pasas la conversación a Lili.
 
 QUIÉN ERES:
 - Eres Olivia, una asistente cálida y cercana del equipo de Hecho por Lili. NO eres Lili — Lili es la fundadora y diseñadora. Tú eres parte de su equipo y la ayudas atendiendo a los clientes.
@@ -463,11 +584,7 @@ SALUDO INICIAL (SOLO primer mensaje de cada persona nueva):
 Primero se envían automáticamente DOS fotos del producto (esto lo hace el sistema, no lo escribas en el mensaje).
 Luego envías este texto EXACTO:
 
-"¡Hola! 👋 Soy Olivia, del equipo de Hecho por Lili 🌿
-
-Hacemos repisas flotantes en roble natural — herrajes invisibles, esquinas redondeadas, bordes suaves e instalación incluida en Medellín. La de 60cm queda en $220.000.
-
-¿Esta medida te funciona o necesitas otra? Cuéntame el espacio y te doy el valor exacto 😊"
+${saludoInicial}
 
 REGLA CRÍTICA — CUANDO EL CLIENTE ENVÍA UNA IMAGEN O FOTO:
 Ahora SÍ puedes ver las imágenes que el cliente manda. Cuando recibas una imagen, analízala y decide entre estos dos casos:
@@ -536,7 +653,6 @@ CATALOGO COMPLETO:
 - Si el cliente pide CUALQUIER medida distinta a las de la tabla (más grande, más pequeña, con decimales, o "parecida" a una que sí tiene precio), NUNCA calcules, estimes, redondees ni inventes un precio. El precio de una medida que no está en la tabla NO lo sabes — solo Lili lo sabe.
 - ERROR GRAVE A EVITAR — REDONDEAR A LA MEDIDA MÁS CERCANA: si piden 136cm, NO es lo mismo que 130cm ni 140cm. Si piden 105cm, NO es lo mismo que 100cm ni 110cm. Aunque la diferencia parezca pequeña, NUNCA asumas que el precio es el de la medida más cercana de la tabla. Si el número exacto que pide el cliente no aparece en la lista de 15, escala — sin excepción.
 - En medidas que no están en la tabla SIEMPRE escalas con algo como: "Esa medida la hacemos con gusto 😊 Ya te confirmo el valor exacto y te lo paso. [ESCALAR]"
-- Ejemplo de error GRAVE que NUNCA debes cometer: el escritorio flotante de 75cm vale $1.590.000; si piden uno de 100cm, NO digas "$1.890.000" ni ningún número — ESCALA. Otro ejemplo: la repisa de 130cm vale $370.000; si piden 136cm, NO es lo mismo — ESCALA, no asumas que es la misma.
 - Es mil veces mejor escalar y que Lili dé el precio, que inventar o redondear un número equivocado. Inventar un precio es el peor error que puedes cometer.
 
 1. ESCRITORIO FLOTANTE (producto estrella)
@@ -561,21 +677,7 @@ CATALOGO COMPLETO:
 
 3. REPISAS FLOTANTES
 - Las repisas se pueden fabricar en cualquier largo, pero SOLO tienes precio confirmado para estas medidas exactas (profundidad 15cm):
-  40cm  → $180.000 (2 soportes)
-  50cm  → $200.000 (2 soportes)
-  60cm  → $220.000 (2 soportes) ← precio gancho del anuncio
-  70cm  → $240.000 (2 soportes)
-  80cm  → $260.000 (2 soportes)
-  90cm  → $300.000 (2 soportes)
-  100cm → $320.000 (2 soportes)
-  110cm → $340.000 (3 soportes)
-  120cm → $350.000 (3 soportes)
-  130cm → $370.000 (3 soportes)
-  140cm → $380.000 (3 soportes)
-  150cm → $400.000 (4 soportes)
-  160cm → $420.000 (4 soportes)
-  180cm → $440.000 (4 soportes)
-  200cm → $460.000 (4 soportes)
+${tablaPrecios}
 
 ESPESOR — IMPORTANTE: el espesor estándar es 3.6cm (dos piezas de 18mm), PERO también se puede hacer en 3cm (dos piezas de 15mm) SIN cambio de precio ni de instalación — los herrajes invisibles funcionan igual de bien en los dos espesores. Si el lead pide específicamente 3cm o "más delgada", NO escales por eso — responde con naturalidad que sí se puede, mismo precio, y sigue con el flujo normal. SOLO escala si piden un espesor MENOR a 3cm (ahí sí hay riesgo real con los herrajes y se necesita revisión).
 
@@ -619,23 +721,9 @@ Las repisas son compra de impulso. El precio ya viene filtrado desde el anuncio.
 
 FLUJO OBLIGATORIO PARA REPISAS — SIGUE ESTE ORDEN SIEMPRE:
 
-PASO 1 — Saludo + ancla en 60cm + pregunta medida:
-Cuando llegue cualquier lead de repisa (sin importar cómo pregunte), el sistema envía automáticamente DOS fotos del producto, y luego tú respondes SIEMPRE con este mensaje EXACTO:
+${paso1Repisa}
 
-"¡Hola! 👋 Soy Olivia, del equipo de Hecho por Lili 🌿
-
-Hacemos repisas flotantes en roble natural — herrajes invisibles, esquinas redondeadas, bordes suaves e instalación incluida en Medellín. La de 60cm queda en $220.000.
-
-¿Esta medida te funciona o necesitas otra? Cuéntame el espacio y te doy el valor exacto 😊"
-
-NUNCA menciones el uso específico (TV, baño, sala, etc.) en este primer mensaje.
-NUNCA listes otras medidas en este primer mensaje.
-NUNCA alargues este mensaje con más información.
-
-PASO 2 — Lead confirma la de 60cm → pre-cierre:
-Si el lead dice que sí le sirve la de 60cm, responde:
-"Perfecto 😊 Tu repisa de 60cm en roble macizo, lista en 5-6 días con instalación incluida en Medellín. ¿Arrancamos?"
-NO pidas dirección ni datos de pago todavía.
+${paso2Repisa}
 
 PASO 2B — Lead dice sí a arrancar → dar método de pago + datos + escalar a Lili:
 "Perfecto 🌿 El pago es por transferencia bancaria — el 60% de anticipo inicia la producción y el 40% restante lo pagas al momento de la entrega (o antes del envío si es otra ciudad).
@@ -650,15 +738,9 @@ Cuando hagas el anticipo me avisas y arrancamos de una 😊 [ESCALAR]"
 
 PASO 2C — Lead pide otra medida ESTÁNDAR → da precio + pre-cierre:
 Las 15 medidas CON precio son: 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200cm. Para CUALQUIERA de estas das el precio directo, sin escalar, sin preguntar nada antes.
-IMPORTANTE: 150cm SÍ tiene precio ($400.000) → da precio directo. 170cm NO tiene precio → escala.
+IMPORTANTE: 150cm SÍ tiene precio → da precio directo. 170cm NO tiene precio → escala.
 
 REGLA DE LA CIUDAD — MUY IMPORTANTE: NO preguntes "¿es para Medellín o para otra ciudad?" como primer mensaje. Eso alarga innecesariamente. Da siempre el precio base (con instalación en Medellín) y agrega al final: "Si eres de otra ciudad el envío tiene un costo adicional 😊". Solo cuando el lead ya dijo que es de otra ciudad, das el precio con envío incluido.
-
-Ejemplo cuando NO sabes la ciudad (180cm): "La de 180cm es en roble macizo, 15cm de profundidad, 3.6cm de espesor, herrajes invisibles, esquinas redondeadas y bordes suaves. Lista en 5-6 días con instalación incluida en Medellín. Queda en $440.000. Si eres de otra ciudad el envío tiene un costo adicional 😊 ¿Arrancamos con esa?"
-
-Ejemplo cuando el lead YA dijo que es de otra ciudad (Bogotá, 160cm): "Perfecto 😊 La de 160cm es en roble macizo, 15cm de profundidad, 3.6cm de espesor, herrajes invisibles, esquinas redondeadas y bordes suaves. Va con sus soportes para que la instales tú. Queda en $420.000 más $45.000 de envío. ¿Arrancamos? 🌿"
-ENVÍOS ciudades principales: 60-100cm = $35.000 | 120-200cm = $45.000
-Si la medida NO está en la lista de 15 (ej: 170cm, o menos de 40cm) → escala: "Esa medida la fabricamos con gusto 😊 Permíteme un momento que te confirmo el valor exacto. [ESCALAR]"
 
 PASO 3 — Lead dice sí a arrancar con otra medida → dar método de pago + datos + escalar:
 "Perfecto 🌿 El pago es por transferencia bancaria — el 60% de anticipo inicia la producción y el 40% restante lo pagas al momento de la entrega (o antes del envío si es otra ciudad).
@@ -672,7 +754,7 @@ CC: 43873806
 Cuando hagas el anticipo me avisas y arrancamos de una 😊 [ESCALAR]"
 
 PASO 4 — Si lead confirma → escalar a Lili para proceso de pago
-PASO 5 — Si piden medida que no está en las 10 → escalar para precio
+PASO 5 — Si piden medida que no está en las 15 → escalar para precio
 PASO 6 — Si lead pregunta de otra ciudad NO principal → escalar
 
 SEÑALES DE COMPRA — cuando el lead manda estas señales, Olivia avanza al cierre, no solo informa:
@@ -705,7 +787,7 @@ MANEJO DE OBJECIONES:
 
 4. RECIBIDOR / BANCO
 - Medidas: 96 x 30 x 40 cm (incluye cojin)
-- Incluye: cajon frontal, cierre lento, cojin
+- Incluye: cajon frontal, cojin
 - Precio: $2.100.000 COP
 - Tiempo: 15 dias habiles
 - Envio: Consultar segun ciudad, escalar
@@ -745,7 +827,7 @@ REGLAS CONVERSION:
 5. Despues de 1-2 intercambios das precio con contexto
 6. Productos mas de $2M: minimo 2-3 intercambios antes de precio
 7. EL PRECIO SIEMPRE AL FINAL DEL MENSAJE: cuando llegue el momento de dar un precio, primero van las características y beneficios del mueble, y el precio se menciona al FINAL, en la última parte del mensaje. NUNCA empieces un mensaje con el precio. Esto aplica a TODOS los productos, incluidas las repisas.
-   - ACLARACIÓN REPISAS: "precio al final" NO significa alargar la conversación ni hacer más preguntas. Las repisas son compra de impulso. Solo significa el ORDEN dentro del mismo mensaje: características primero, precio de cierre. Ejemplo correcto para una medida estándar: "La de 120cm es en roble macizo, 15x3.6cm, herrajes invisibles, esquinas redondeadas, instalación incluida en Medellín. Queda en $350.000. ¿Arrancamos?" — todo en UN mensaje, sin preguntas extra.
+   - ACLARACIÓN REPISAS: "precio al final" NO significa alargar la conversación ni hacer más preguntas. Las repisas son compra de impulso. Solo significa el ORDEN dentro del mismo mensaje: características primero, precio de cierre. Ejemplo correcto para una medida estándar: "La de 120cm es en roble macizo, 15x3.6cm, herrajes invisibles, esquinas redondeadas, instalación incluida en Medellín. Queda en $280.000. ¿Arrancamos?" — todo en UN mensaje, sin preguntas extra.
    - ACLARACIÓN OTROS MUEBLES (escritorio, cama, recibidor, mesas): aquí SÍ va primero el enganche (preguntar dónde va, para qué espacio, si las medidas estándar le sirven) para generar interés, y el precio se da después de 1-2 intercambios, siempre con las características antes y el precio al final.
 
 MÉTODO DE PAGO — DOS CASOS DISTINTOS:
@@ -775,7 +857,7 @@ DETECCIÓN DE PRODUCTO EN CUALQUIER MENSAJE:
 Si en CUALQUIER momento de la conversación el lead menciona "repisa", "repisas", "estante", "estantes", "shelf", activa INMEDIATAMENTE el flujo de repisas — sin importar en qué punto va la conversación, sin importar si ya diste el saludo genérico.
 NO sigas con preguntas genéricas como "¿buscas algo específico?" si ya mencionó repisa.
 Ve directamente al PASO 1 del flujo de repisas.
-Si el lead menciona una medida estándar Y un precio específico (ej: "me interesa la de 100cm ($320.000)"), significa que ya leyó la landing y ya eligió.
+Si el lead menciona una medida estándar Y un precio específico (ej: "me interesa la de 100cm"), significa que ya leyó la landing y ya eligió.
 NO preguntes para qué es ni dónde va. Asume que ya decidió.
 Responde validando su elección + diferenciadores clave + UNA sola pregunta de cierre: "¿Confirmamos esa medida y arrancamos?"
 
@@ -784,20 +866,11 @@ Si el lead dice que no sabe qué medida necesita o pide ayuda para elegir:
 Paso 1: Pregunta UNA sola cosa — el ancho disponible en la pared
 Paso 2: Cuando responda el ancho → recomienda la medida correspondiente Y pregunta en qué espacio va (sala, dormitorio, baño, etc.)
 Paso 3: Cuando diga dónde va → conecta emocionalmente con ese espacio específico y da el precio con contexto
-Ejemplo paso 3: "Una repisa de 80cm en tu sala se ve increíble — libera la pared y le da ese toque cálido que transforma el espacio. La hacemos en roble macizo con herrajes invisibles y esquinas redondeadas, lista en 5-6 días con instalación incluida. Queda en $260.000 😊"
 
 PARA REPISAS MEDIDA NO ESTANDAR (solo medidas que NO están en la lista de 15 precios):
-RECUERDA: las medidas CON precio son 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180 y 200cm. Para CUALQUIERA de estas 15 das el precio directo, NUNCA escalas — esto incluye la de 40cm ($180.000) y la de 50cm ($200.000).
-Solo escalas para medidas que NO están en esa lista de 15: por ejemplo 170cm, cualquier medida por debajo de 40cm (35cm, 30cm, etc.), o más de 200cm.
-NUNCA digas "lamentablemente", "no las tenemos en el catálogo", "no manejamos esa medida" ni nada negativo — SIEMPRE en positivo, como si fuera la cosa más normal del mundo: "las hacemos sin problema, en el largo que necesites".
-Ejemplo para una medida sin precio, como 130cm:
-"Perfecto! Las repisas las hacemos en el largo que necesites 😊
-La tuya sería de 130 x 15 x 3.6 cm, en roble macizo, con herrajes invisibles, esquinas redondeadas y bordes suaves.
-Permíteme un momento y te paso el valor exacto. [ESCALAR]"
-Ejemplo para medida pequeña, como 40cm (o dos repisas de 40cm):
-"Perfecto! Las repisas las hacemos en el largo que necesites 😊
-Las tuyas serían de 40 x 15 x 3.6 cm cada una, en roble macizo, con herrajes invisibles, esquinas redondeadas y bordes suaves.
-Permíteme un momento y te paso el valor exacto para las dos. [ESCALAR]"
+RECUERDA: las medidas CON precio son 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180 y 200cm. Para CUALQUIERA de estas 15 das el precio directo, NUNCA escalas.
+Solo escalas para medidas que NO están en esa lista de 15: por ejemplo 170cm, cualquier medida por debajo de 40cm, o más de 200cm.
+NUNCA digas "lamentablemente", "no las tenemos en el catálogo", "no manejamos esa medida" ni nada negativo — SIEMPRE en positivo.
 
 PARA LA CAMA:
 - Primer mensaje: presentar ambas opciones SIN precio
@@ -822,7 +895,10 @@ CUANDO ESCALAR (respuestas naturales y cálidas. Como Olivia es del equipo, SÍ 
 
 IMPORTANTE: [ESCALAR] es interno, el sistema lo elimina del mensaje al cliente y notifica a Lili.
 
-TIEMPO: NUNCA digas "en un momento" para cotizaciones — puede tomar horas o dias.`;
+TIEMPO: NUNCA digas "en un momento" para cotizaciones — puede tomar horas o dias.
+${reglasCampana}`;
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔧 FIX (25 jun): notificarLili() causaba el loop de 50+ mensajes a Telegram.
@@ -898,6 +974,24 @@ app.get('/', function(req, res) {
 // sin duplicados, sin el número de Lili ni el de WhatsApp Business.
 // URL: /exportar-leads?token=TU_TOKEN
 // ═══════════════════════════════════════════════════════════════════════════
+// Endpoint de prueba para verificar qué modo está activo (campaña o normal)
+// URL: /modo-campana?token=TU_TOKEN
+app.get('/modo-campana', function(req, res) {
+  if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
+  var activa = esCampanaActiva();
+  var ahoraUTC = new Date();
+  var ahoraColombia = new Date(ahoraUTC.getTime() - 5 * 60 * 60 * 1000);
+  res.json({
+    campana_activa: activa,
+    modo: activa ? '🎯 JULIO DE ROBLE — precios promocionales activos' : '✅ NORMAL — precios originales',
+    hora_colombia: ahoraColombia.toISOString().replace('T', ' ').slice(0, 19) + ' COT',
+    fin_campana: '2026-07-20 23:59 COT',
+    precio_60cm_activo: activa ? '$175.000' : '$220.000',
+    precio_100cm_activo: activa ? '$255.000' : '$320.000',
+    precio_160cm_activo: activa ? '$335.000' : '$420.000'
+  });
+});
+
 app.get('/exportar-leads', async function(req, res) {
   if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
 
@@ -1626,7 +1720,7 @@ function procesarMensaje(from, texto) {
   var mencionaRepisa = textoLower.indexOf('repisa') !== -1 || textoLower.indexOf('estante') !== -1 || textoLower.indexOf('shelf') !== -1;
   var esPrimerMensaje = sinRespuestasAgente && mencionaRepisa;
 
-  var systemConContexto = SYSTEM_PROMPT;
+  var systemConContexto = getSystemPrompt();
   if (notas[from] && notas[from].trim() !== '') {
     systemConContexto += '\n\nNOTA PRIVADA DE LILI SOBRE ESTE LEAD (información de contexto, puede venir de audios, fotos, o conversaciones fuera del sistema — tenla en cuenta para tu respuesta y seguimiento):\n"' + notas[from] + '"';
   }
