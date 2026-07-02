@@ -328,6 +328,13 @@ setInterval(function() {
     if (seg.estado === 'cerrado_venta' || seg.estado === 'cerrado_perdido' || seg.estado === 'cerrado_sin_respuesta') continue;
     if (seg.estado === 'saludo_sin_respuesta') continue;
     if (pausadoTodo) continue;
+    // 🔧 FIX (25 jun): si Lili tiene este lead pausado (lo está manejando ella),
+    // el cron automático NO debe tocarlo — antes esto se ignoraba y el cron
+    // podía quitarle la pausa a mitad de una conversación que ella controlaba,
+    // mandando un seguimiento automático sin que ella lo pidiera. Ahora se
+    // salta por completo: no cuenta intento, no manda nada, no toca la pausa.
+    // El seguimiento automático solo retoma cuando ella reactiva el agente.
+    if (pausados[numero]) continue;
 
     var transcurrido = ahora - seg.timestamp;
     var tiempoEspera = null;
@@ -348,7 +355,6 @@ setInterval(function() {
         var mensaje = getMensajeSeguimiento(seg.estado, seg.intentos, nombre);
 
         if (mensaje) {
-          quitarPausado(numero);
           enviarPlantilla(numero, 'seguimiento_repisa', 'es_CO');
           seg.timestamp = Date.now();
           guardarSeguimiento(numero);
@@ -886,6 +892,49 @@ app.get('/', function(req, res) {
   res.json({ status: 'Agente Lili V10 activo', bd: bdLista, pausadoTodo: pausadoTodo, pausados: Object.keys(pausados).length, seguimientos: Object.keys(seguimientos).length });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Exportación de leads para audiencia personalizada en Meta Ads.
+// Devuelve un CSV listo para subir: columna "phone", formato internacional,
+// sin duplicados, sin el número de Lili ni el de WhatsApp Business.
+// URL: /exportar-leads?token=TU_TOKEN
+// ═══════════════════════════════════════════════════════════════════════════
+app.get('/exportar-leads', async function(req, res) {
+  if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
+
+  var EXCLUIDOS = ['573008654336', '573334318777'];
+  if (LILI_NUMERO) EXCLUIDOS.push(LILI_NUMERO);
+
+  try {
+    var result = await pool.query('SELECT DISTINCT numero FROM conversaciones');
+    var numeros = result.rows
+      .map(function(row) { return String(row.numero).replace(/[^0-9]/g, ''); })
+      .filter(function(n) {
+        if (!n || n.length < 8) return false;
+        // Agregar prefijo 57 si no lo tiene (números colombianos de 10 dígitos)
+        if (n.length === 10 && !n.startsWith('57')) n = '57' + n;
+        return !EXCLUIDOS.includes(n);
+      })
+      .map(function(n) {
+        if (n.length === 10 && !n.startsWith('57')) return '57' + n;
+        return n;
+      });
+
+    // Deduplicar después del formateo
+    var unicos = Array.from(new Set(numeros));
+
+    var csv = 'phone\n' + unicos.join('\n');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="leads_julio_retargeting.csv"');
+    res.send(csv);
+
+    console.log('Exportación CSV: ' + unicos.length + ' leads únicos exportados para Meta Ads');
+  } catch (e) {
+    console.error('Error exportando leads:', e.message);
+    res.status(500).send('Error generando el archivo: ' + e.message);
+  }
+});
+
 app.get('/reporte', function(req, res) {
   if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
 
@@ -1234,7 +1283,7 @@ app.get('/panel/chat', function(req, res) {
   html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="Enviar"});}';
   html += 'function agente(cmd){fetch("/control?cmd="+cmd+"&numero="+NUM+"&token="+TK).then(function(){location.reload()});}';
   html += 'function dispararPlantilla(e){';
-  html += 'if(!confirm("¿Enviar la plantilla de reapertura a +"+NUM+"? Úsala solo si lleva más de 24h sin escribirte. Cuando responda, Olivia sigue la conversación con el contexto normal."))return;';
+  html += 'if(!confirm("Se va a enviar este mensaje EXACTO a +"+NUM+":\\n\\n\\"Hola! 😊 Quería saber si pudiste revisar la información de tu repisa en roble. Cuéntame si tienes alguna duda, con gusto te ayudo 🌿\\"\\n\\nÚsalo solo si lleva más de 24h sin escribirte. El lead quedará PAUSADO (tú sigues con el control) — si prefieres que Olivia continúe sola cuando responda, activa el agente después con el botón de arriba."))return;';
   html += 'var b=e.target;b.disabled=true;b.textContent="Enviando...";';
   html += 'fetch("/panel/enviar-plantilla",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK,numero:NUM})})';
   html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){location.reload()}else{alert("Error al enviar la plantilla");b.disabled=false;b.textContent="📨 Enviar plantilla de reapertura"}})';
@@ -1351,20 +1400,26 @@ app.post('/panel/marcar', function(req, res) {
 
 // Disparo manual de la plantilla de reapertura, para cuando Lili necesita más
 // de 24h para preparar algo (cotización, fotos) y quiere "tocar la puerta" de
-// un lead específico sin esperar al cron automático. No cambia el estado de
-// seguimiento ni pausa el número — solo reabre la ventana; cuando el lead
-// responda, Olivia sigue con el contexto normal de la conversación.
+// un lead específico sin esperar al cron automático.
+// IMPORTANTE: esto PAUSA al lead automáticamente (igual que cuando Lili responde
+// desde el panel), porque normalmente este botón se usa cuando se está esperando
+// algo específico (fotos, medidas, color) que Olivia no puede resolver sola.
+// Si en algún caso Lili SÍ quiere que Olivia siga la conversación después de que
+// el lead responda, puede activar el agente con el botón "▶️ Activar agente
+// Olivia" justo después de mandar la plantilla.
 app.post('/panel/enviar-plantilla', function(req, res) {
   if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
   if (!esNumeroValido(numero)) return res.json({ ok: false });
 
   enviarPlantilla(numero, 'seguimiento_repisa', 'es_CO').then(function() {
+    marcarPausado(numero);
     if (!conversaciones[numero]) conversaciones[numero] = [];
-    conversaciones[numero].push({ role: 'assistant', content: '[Lili reabrió la conversación con la plantilla de WhatsApp]' });
+    conversaciones[numero].push({ role: 'assistant', content: '[Lili reabrió la conversación con la plantilla de WhatsApp: "Hola! 😊 Quería saber si pudiste revisar la información de tu repisa en roble. Cuéntame si tienes alguna duda, con gusto te ayudo 🌿"]' });
     if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
     guardarConversacion(numero);
-    console.log('Plantilla disparada manualmente desde panel a ' + numero);
+    cancelarSeguimiento(numero);
+    console.log('Plantilla disparada manualmente desde panel a ' + numero + ' — número pausado para que Lili mantenga el control');
     res.json({ ok: true });
   }).catch(function(error) {
     console.error('Error disparando plantilla manual:', error.message);
