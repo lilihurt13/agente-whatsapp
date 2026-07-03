@@ -553,6 +553,13 @@ CAMPAÑA JULIO DE ROBLE — REGLAS ACTIVAS HASTA EL 20 DE JULIO:
 - Instalación incluida en Medellín sigue igual que siempre
 - Anticipo 60% para arrancar, 40% contra entrega sigue igual que siempre
 - NUNCA menciones el precio original junto al promocional ("antes valía X, ahora Y") — solo el precio actual
+
+REGLA CRÍTICA DE CAMPAÑA — ANCLA SIEMPRE EN REPISAS:
+Esta campaña de retargeting es 100% enfocada en repisas flotantes. Por eso:
+- Si el lead escribe cualquier cosa genérica (saludos, preguntas sobre materiales, preguntas sobre la marca, preguntas sin mencionar un mueble específico), SIEMPRE responde con el saludo de campaña anclado en la repisa y la promo del 20 de julio — NUNCA abras el catálogo completo ni preguntes "¿qué mueble te interesa?".
+- SOLO pivoteas a otro producto (escritorio, recibidor, mesa, cama) si el lead lo menciona EXPLÍCITAMENTE por nombre.
+- Ejemplos de mensajes genéricos que deben anclar en repisas: "hola", "buenas", "¿cuál es el precio del roble?", "¿qué tienen?", "quiero información", "¿cómo funcionan los muebles?", "¿dónde están ubicados?" → todos van al saludo de repisas con promo.
+- Ejemplo de mensaje que sí pivotea: "quiero un escritorio" → ahí sí vas al flujo de escritorio como siempre.
 `
     : '';
 
@@ -1718,7 +1725,26 @@ function procesarMensaje(from, texto) {
   var sinRespuestasAgente = conversaciones[from].filter(function(m) { return m.role === 'assistant'; }).length === 0;
   var textoLower = texto.toLowerCase();
   var mencionaRepisa = textoLower.indexOf('repisa') !== -1 || textoLower.indexOf('estante') !== -1 || textoLower.indexOf('shelf') !== -1;
-  var esPrimerMensaje = sinRespuestasAgente && mencionaRepisa;
+
+  // Durante la campaña de retargeting (100% enfocada en repisas), cualquier
+  // primer mensaje que NO mencione explícitamente otro mueble distinto activa
+  // el flujo de repisas con el saludo promocional. Solo si el lead dice
+  // "escritorio", "recibidor", "mesa", "cama" en su primer mensaje, se omite
+  // el saludo de repisas y Olivia lo atiende en el flujo de ese producto.
+  var mencionaOtroMueble = textoLower.indexOf('escritorio') !== -1 ||
+                           textoLower.indexOf('recibidor') !== -1 ||
+                           textoLower.indexOf('mesa') !== -1 ||
+                           textoLower.indexOf('cama') !== -1 ||
+                           textoLower.indexOf('nochero') !== -1;
+
+  var esPrimerMensaje;
+  if (esCampanaActiva()) {
+    // Campaña activa: primer mensaje sin mención de otro mueble → flujo repisa
+    esPrimerMensaje = sinRespuestasAgente && !mencionaOtroMueble;
+  } else {
+    // Fuera de campaña: comportamiento original — solo activa si menciona repisa
+    esPrimerMensaje = sinRespuestasAgente && mencionaRepisa;
+  }
 
   var systemConContexto = getSystemPrompt();
   if (notas[from] && notas[from].trim() !== '') {
