@@ -1364,6 +1364,8 @@ app.get('/panel/chat', function(req, res) {
   html += '<button class="btn-cerrar btn-venta" onclick="cerrar(\'cerrado_venta\',event)">✅ Venta cerrada</button>';
   html += '<button class="btn-cerrar btn-perdido" onclick="cerrar(\'cerrado_perdido\',event)">❌ No va a comprar</button>';
   html += '</div>';
+  html += '<div class="marcar-titulo">¿Lead cerrado que volvió a escribir?</div>';
+  html += '<button class="btn-accion-full" style="background:#5a7fbd;color:#fff;margin-bottom:4px" onclick="reabrirLead(event)">🔄 Reabrir lead (pasa a Atendiendo yo)</button>';
   html += '<div class="marcar-titulo">📝 Nota privada (lo que hablaste por audio, qué esperas, etc.):</div>';
   html += '<textarea id="nota" class="nota-input" placeholder="Ej: Quedó de mandar fotos del material el viernes...">' + escapeHtml(notas[numero] || '') + '</textarea>';
   html += '<button class="btn-nota" onclick="guardarNota(event)">Guardar nota</button>';
@@ -1406,7 +1408,12 @@ app.get('/panel/chat', function(req, res) {
   html += 'fetch("/control?cmd="+cmd+"&numero="+NUM+"&token="+TK)';
   html += '.then(function(){setTimeout(function(){location.reload()},700)})';
   html += '.catch(function(){alert("Error de conexion");b.disabled=false;});}';
-  html += 'window.scrollTo(0, document.body.scrollHeight);';
+  html += 'function reabrirLead(e){';
+  html += 'if(!confirm("¿Reabrir este lead? Pasará a \'Atendiendo yo\' y Olivia no lo manejará hasta que lo actives."))return;';
+  html += 'var b=e.target;b.disabled=true;b.textContent="Reabriendo...";';
+  html += 'fetch("/panel/reabrir",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TK,numero:NUM})})';
+  html += '.then(function(r){return r.json()}).then(function(d){if(d.ok){location.reload()}else{alert("Error");b.disabled=false;b.textContent="🔄 Reabrir lead"}})';
+  html += '.catch(function(){alert("Error de conexion");b.disabled=false;b.textContent="🔄 Reabrir lead"});}';  html += 'window.scrollTo(0, document.body.scrollHeight);';
   html += 'function toggleAcciones(){';
   html += 'var p=document.getElementById("acciones");';
   html += 'p.className = p.className.indexOf("abierto")===-1 ? "acciones-panel abierto" : "acciones-panel";';
@@ -1547,6 +1554,20 @@ app.post('/panel/nota', function(req, res) {
 // Borra por completo el historial de un número (conversación, pausa, seguimiento,
 // nota). Pensado para que Lili resetee su propia conversación de prueba y vuelva
 // a ver el flujo completo (saludo + fotos) cuando ensaya cambios en Olivia.
+// Reabre un lead cerrado (venta o perdido) — lo pasa a pausado bajo control
+// de Lili para que pueda retomar la conversación desde el panel.
+app.post('/panel/reabrir', function(req, res) {
+  if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
+  var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
+  if (!esNumeroValido(numero)) return res.json({ ok: false });
+
+  // Borrar el estado de cerrado y pausar para que quede en "Atendiendo yo"
+  borrarSeguimiento(numero);
+  marcarPausado(numero);
+  console.log('Lead reabierto desde panel: ' + numero + ' — pasó a Atendiendo yo');
+  res.json({ ok: true });
+});
+
 app.post('/panel/borrar-historial', function(req, res) {
   if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false });
   var numero = (req.body.numero || '').replace(/[+\s-]/g, '');
@@ -1838,9 +1859,46 @@ function procesarMensaje(from, texto) {
       delete procesando[from];
     }
   }).catch(function(error) {
-    console.error('Error Claude:', error.response ? JSON.stringify(error.response.data) : error.message);
-    delete procesando[from];
-    enviarMensaje(from, 'Hola! 🙌 Estoy revisando tu mensaje, en un momento te respondo 😊');
+    var errorMsg = error.response ? JSON.stringify(error.response.data) : error.message;
+    console.error('❌ Error Claude (intento 1):', errorMsg);
+
+    // Reintento automático después de 3 segundos — durante alta demanda de campaña
+    // Claude puede fallar por rate limit o timeout puntual. Un solo reintento
+    // resuelve la mayoría de estos casos sin que el lead reciba un mensaje de error.
+    setTimeout(function() {
+      axios.post(
+        'https://api.anthropic.com/v1/messages',
+        { model: 'claude-haiku-4-5', max_tokens: 600, system: systemConContexto, messages: mensajesParaClaude },
+        { headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' } }
+      ).then(function(response) {
+        console.log('✅ Reintento Claude exitoso para ' + from);
+        var respuesta = response.data.content[0].text;
+        conversaciones[from].push({ role: 'assistant', content: respuesta });
+        guardarConversacion(from);
+        var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
+        var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').replace(/\[FOTOS_EXTRA\]/g, '').trim();
+        if (necesitaEscalar) {
+          notificarLili(from, texto.substring(0, 100));
+          marcarPausado(from);
+        } else {
+          if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
+            if (from !== LILI_NUMERO) {
+              seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
+              guardarSeguimiento(from);
+            }
+          }
+        }
+        enviarMensaje(from, textoLimpio);
+        delete procesando[from];
+      }).catch(function(error2) {
+        // Falló dos veces — notificar a Lili para que atienda manualmente
+        var errorMsg2 = error2.response ? JSON.stringify(error2.response.data) : error2.message;
+        console.error('❌ Error Claude (intento 2, falló definitivo) para ' + from + ':', errorMsg2);
+        delete procesando[from];
+        notificarLili(from, '⚠️ El agente falló 2 veces al responder a este lead (error API). Revisa la conversación y responde manualmente.');
+        marcarPausado(from);
+      });
+    }, 3000);
   });
   }); // cierra promesaMensajes.then
 }
