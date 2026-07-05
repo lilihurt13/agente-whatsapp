@@ -547,6 +547,7 @@ NO pidas dirección ni datos de pago todavía.`;
     ? `
 CAMPAÑA JULIO DE ROBLE — REGLAS ACTIVAS HASTA EL 20 DE JULIO:
 - SIEMPRE da el precio promocional directamente, NUNCA menciones el precio original
+- REGLA CRÍTICA PARA LEADS CON HISTORIAL: si en mensajes anteriores de esta conversación aparece un precio normal (por ejemplo $220.000 para 60cm), IGNÓRALO COMPLETAMENTE. Esos precios son de antes de la campaña. Siempre responde con el precio promocional actual ($175.000 para 60cm, etc.). Si el lead pregunta por qué el precio cambió, explica que tienen una promoción especial Julio de Roble activa hasta el 20 de julio.
 - Si el cliente pregunta si hay descuento, confirma: "Sí, tenemos promoción Julio de Roble con 20% de descuento hasta el 20 de julio 😊"
 - Si el cliente pide tiempo para decidir o dice "lo pienso", menciona con naturalidad que la promoción vence el 20 de julio. Ejemplo: "Claro que sí 😊 Cuéntame si surge alguna duda — recuerda que el precio promocional está disponible hasta el 20 de julio 🌿"
 - Las repisas de 40cm y 50cm tienen 15% de descuento (no 20%) — mencionarlo SOLO si el cliente pregunta específicamente por el porcentaje de descuento
