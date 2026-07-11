@@ -1818,9 +1818,14 @@ function procesarMensaje(from, texto) {
   }
 
   promesaMensajes.then(function(mensajesParaClaude) {
+  // Filtrar el campo ts antes de enviar a Claude — la API no acepta campos extra
+  var mensajesLimpios = mensajesParaClaude.map(function(m) {
+    if (Array.isArray(m.content)) return { role: m.role, content: m.content };
+    return { role: m.role, content: m.content };
+  });
   axios.post(
     'https://api.anthropic.com/v1/messages',
-    { model: 'claude-haiku-4-5', max_tokens: 600, system: systemConContexto, messages: mensajesParaClaude },
+    { model: 'claude-haiku-4-5', max_tokens: 600, system: systemConContexto, messages: mensajesLimpios },
     { headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' } }
   ).then(function(response) {
     var respuesta = response.data.content[0].text;
@@ -1878,7 +1883,7 @@ function procesarMensaje(from, texto) {
     setTimeout(function() {
       axios.post(
         'https://api.anthropic.com/v1/messages',
-        { model: 'claude-haiku-4-5', max_tokens: 600, system: systemConContexto, messages: mensajesParaClaude },
+        { model: 'claude-haiku-4-5', max_tokens: 600, system: systemConContexto, messages: mensajesLimpios },
         { headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' } }
       ).then(function(response) {
         console.log('✅ Reintento Claude exitoso para ' + from);
