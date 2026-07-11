@@ -57,6 +57,14 @@ const procesando = {};
 let pausadoTodo = false;
 let bdLista = false;
 
+// Helper: agrega mensaje al historial CON timestamp
+function agregarMensaje(numero, role, contenido) {
+  if (!conversaciones[numero]) conversaciones[numero] = [];
+  conversaciones[numero].push({ role: role, content: contenido, ts: Date.now() });
+  if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
+  guardarConversacion(numero);
+}
+
 async function crearIndices() {
   var indices = [
     { nombre: 'idx_conversaciones_numero', sql: 'CREATE INDEX IF NOT EXISTS idx_conversaciones_numero ON conversaciones(numero)' },
@@ -1202,6 +1210,7 @@ app.get('/panel', function(req, res) {
   html += '.marcar-titulo{font-size:11px;color:#7a7268;text-align:left;margin-top:10px;margin-bottom:6px}';
   html += '</style></head><body>';
   html += '<h1>🌿 Panel de Conversaciones</h1>';
+  html += '<input type="text" id="buscar" placeholder="🔍 Buscar por número..." style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #cdbfae;border-radius:10px;font-size:15px;margin-bottom:12px;font-family:inherit" oninput="filtrarLeads(this.value)">';
 
   html += '<div class="tabs">';
   html += '<button class="tab activa" id="tab-mios" onclick="verGrupo(\'mios\')">🔵 Atendiendo yo (' + mios.length + ')</button>';
@@ -1230,6 +1239,16 @@ app.get('/panel', function(req, res) {
 
   html += '<script>';
   html += 'var TK_PANEL="' + CONTROL_TOKEN + '";';
+  html += 'function filtrarLeads(q){';
+  html += 'q=q.replace(/[^0-9]/g,"");';
+  html += 'var items=document.querySelectorAll(".lead,.lead-frio");';
+  html += 'items.forEach(function(el){';
+  html += 'var num=el.querySelector(".num");';
+  html += 'if(!num){el.style.display="";return;}';
+  html += 'var texto=num.textContent.replace(/[^0-9]/g,"");';
+  html += 'el.style.display=(!q||texto.indexOf(q)!==-1)?"":"none";';
+  html += '});';
+  html += '}';
   html += 'function verGrupo(g){';
   html += 'var grupos=["mios","olivia","ventas","perdidos","frios"];';
   html += 'grupos.forEach(function(x){';
@@ -1308,6 +1327,7 @@ app.get('/panel/chat', function(req, res) {
   html += '.media-audio{max-width:240px}';
   html += '.media-tag{font-style:italic;color:#5a534b}';
   html += '.btn-media{flex:1;border:1px solid #cdbfae;background:#fff;color:#5a534b;border-radius:8px;padding:9px 4px;font-size:12px;font-weight:600;cursor:pointer}';
+  html += '.ts{font-size:11px;color:#999;margin-top:4px;text-align:right}';
   html += '</style></head><body>';
   html += '<div class="top"><a href="/panel?token=' + CONTROL_TOKEN + '">← Volver a leads</a>';
   html += '<div class="n">+' + escapeHtml(numero) + '</div>';
@@ -1319,6 +1339,15 @@ app.get('/panel/chat', function(req, res) {
   } else {
     conv.forEach(function(m) {
       var clase = m.role === 'user' ? 'lead' : 'lili';
+      var horaHtml = '';
+      if (m.ts) {
+        var d = new Date(m.ts - 5 * 60 * 60 * 1000);
+        var dia = d.getUTCDate();
+        var mes = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][d.getUTCMonth()];
+        var hh = String(d.getUTCHours()).padStart(2,'0');
+        var mm = String(d.getUTCMinutes()).padStart(2,'0');
+        horaHtml = '<div class="ts">' + dia + ' ' + mes + ' · ' + hh + ':' + mm + '</div>';
+      }
       var contenidoHtml;
       if (typeof m.content === 'string' && m.content.indexOf('[IMAGEN] ') === 0) {
         var urlImg = m.content.slice(9);
@@ -1333,7 +1362,7 @@ app.get('/panel/chat', function(req, res) {
       } else {
         contenidoHtml = escapeHtml(m.content);
       }
-      html += '<div class="row"><div class="msg ' + clase + '">' + contenidoHtml + '</div></div>';
+      html += '<div class="row"><div class="msg ' + clase + '">' + contenidoHtml + horaHtml + '</div></div>';
     });
   }
   html += '</div>';
@@ -1452,10 +1481,7 @@ app.post('/panel/enviar', function(req, res) {
   if (!esNumeroValido(numero) || !texto) return res.json({ ok: false });
 
   marcarPausado(numero);
-  if (!conversaciones[numero]) conversaciones[numero] = [];
-  conversaciones[numero].push({ role: 'assistant', content: texto });
-  if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
-  guardarConversacion(numero);
+  agregarMensaje(numero, 'assistant', texto);
   cancelarSeguimiento(numero);
 
   enviarMensaje(numero, texto);
@@ -1483,11 +1509,8 @@ app.post('/panel/enviar-archivo', upload.single('archivo'), function(req, res) {
       var envio = tipo === 'audio' ? enviarAudio(numero, url) : enviarImagen(numero, url);
 
       return envio.then(function() {
-        if (!conversaciones[numero]) conversaciones[numero] = [];
         var etiqueta = tipo === 'audio' ? '[Lili envió un audio]' : '[Lili envió una imagen]';
-        conversaciones[numero].push({ role: 'assistant', content: etiqueta });
-        if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
-        guardarConversacion(numero);
+        agregarMensaje(numero, 'assistant', etiqueta);
         cancelarSeguimiento(numero);
         console.log((tipo === 'audio' ? 'Audio' : 'Imagen') + ' enviado desde panel a ' + numero);
         res.json({ ok: true, url: url });
@@ -1528,10 +1551,7 @@ app.post('/panel/enviar-plantilla', function(req, res) {
 
   enviarPlantilla(numero, 'seguimiento_repisa', 'es_CO').then(function() {
     marcarPausado(numero);
-    if (!conversaciones[numero]) conversaciones[numero] = [];
-    conversaciones[numero].push({ role: 'assistant', content: '[Lili reabrió la conversación con la plantilla de WhatsApp: "Hola! 😊 Quería saber si pudiste revisar la información de tu repisa en roble. Cuéntame si tienes alguna duda, con gusto te ayudo 🌿"]' });
-    if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
-    guardarConversacion(numero);
+    agregarMensaje(numero, 'assistant', '[Lili reabrió la conversación con la plantilla de WhatsApp: "Hola! 😊 Quería saber si pudiste revisar la información de tu repisa en roble. Cuéntame si tienes alguna duda, con gusto te ayudo 🌿"]');
     cancelarSeguimiento(numero);
     console.log('Plantilla disparada manualmente desde panel a ' + numero + ' — número pausado para que Lili mantenga el control');
     res.json({ ok: true });
@@ -1596,10 +1616,7 @@ app.post('/panel/reactivar-tanda', function(req, res) {
   numerosLimpios.forEach(function(numero, idx) {
     setTimeout(function() {
       marcarPausado(numero);
-      if (!conversaciones[numero]) conversaciones[numero] = [];
-      conversaciones[numero].push({ role: 'assistant', content: mensaje });
-      if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
-      guardarConversacion(numero);
+      agregarMensaje(numero, 'assistant', mensaje);
       cancelarSeguimiento(numero);
       enviarMensaje(numero, mensaje);
       console.log('Reactivación manual enviada a ' + numero);
@@ -1664,10 +1681,7 @@ app.post('/webhook', function(req, res) {
         if (leadNumero && esNumeroValido(leadNumero)) {
           marcarPausado(leadNumero);
           console.log('Lili escribió a ' + leadNumero + ' — número pausado automáticamente');
-          if (!conversaciones[leadNumero]) conversaciones[leadNumero] = [];
-          conversaciones[leadNumero].push({ role: 'assistant', content: message.text.body });
-          if (conversaciones[leadNumero].length > 12) conversaciones[leadNumero] = conversaciones[leadNumero].slice(-12);
-          guardarConversacion(leadNumero);
+          agregarMensaje(leadNumero, 'assistant', message.text.body);
           var estadoDetectado = detectarEstadoPorMensajeLili(message.text.body);
           if (estadoDetectado) {
             activarSeguimiento(leadNumero, estadoDetectado);
@@ -1682,11 +1696,7 @@ app.post('/webhook', function(req, res) {
         var texto = message.text.body;
         console.log('Mensaje de ' + from + ': ' + texto);
 
-        if (!conversaciones[from]) conversaciones[from] = [];
-        conversaciones[from].push({ role: 'user', content: texto });
-        if (conversaciones[from].length > 12) conversaciones[from] = conversaciones[from].slice(-12);
-        guardarConversacion(from);
-
+        agregarMensaje(from, 'user', texto);
         cancelarSeguimiento(from);
 
         if (leadPrometioInfo(texto) && !pausados[from]) {
@@ -1718,7 +1728,7 @@ app.post('/webhook', function(req, res) {
         var textoMedia = '[El cliente envió ' + (message.type === 'image' ? 'una imagen' : message.type === 'audio' ? 'un audio' : 'un archivo') + ']';
         if (!conversaciones[fromMedia]) conversaciones[fromMedia] = [];
         var indiceMensaje = conversaciones[fromMedia].length;
-        conversaciones[fromMedia].push({ role: 'user', content: textoMedia });
+        conversaciones[fromMedia].push({ role: 'user', content: textoMedia, ts: Date.now() });
         if (conversaciones[fromMedia].length > 12) { conversaciones[fromMedia] = conversaciones[fromMedia].slice(-12); indiceMensaje = conversaciones[fromMedia].length - 1; }
         guardarConversacion(fromMedia);
 
@@ -1815,8 +1825,7 @@ function procesarMensaje(from, texto) {
   ).then(function(response) {
     var respuesta = response.data.content[0].text;
     console.log('Claude: ' + respuesta);
-    conversaciones[from].push({ role: 'assistant', content: respuesta });
-    guardarConversacion(from);
+    agregarMensaje(from, 'assistant', respuesta);
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
     var necesitaFotosExtra = respuesta.indexOf('[FOTOS_EXTRA]') !== -1;
@@ -1874,8 +1883,7 @@ function procesarMensaje(from, texto) {
       ).then(function(response) {
         console.log('✅ Reintento Claude exitoso para ' + from);
         var respuesta = response.data.content[0].text;
-        conversaciones[from].push({ role: 'assistant', content: respuesta });
-        guardarConversacion(from);
+        agregarMensaje(from, 'assistant', respuesta);
         var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
         var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').replace(/\[FOTOS_EXTRA\]/g, '').trim();
         if (necesitaEscalar) {
