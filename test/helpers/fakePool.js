@@ -148,10 +148,24 @@ function crearPoolSimulado() {
         id: estado.siguienteSubmissionId++,
         leadgen_id: leadgenId, page_id: params[1], form_id: params[2],
         ad_id: params[3], adgroup_id: params[4], estado_vinculacion: 'PENDIENTE',
-        field_data: [], lead_id: null
+        field_data: [], lead_id: null, created_at: new Date()
       };
       estado.leadFormSubmissions.push(nuevo);
       return Promise.resolve({ rows: [{ id: nuevo.id }] });
+    }
+
+    // --- lead_form_submissions: búsqueda de formulario vinculado reciente (Fase 1B) ---
+    if (s.indexOf("SELECT * FROM lead_form_submissions WHERE lead_id = $1 AND estado_vinculacion = 'VINCULADO'") === 0) {
+      const VENTANA_MS = 48 * 60 * 60 * 1000;
+      const ahora = Date.now();
+      const candidatos = estado.leadFormSubmissions
+        .filter(function(f) {
+          return f.lead_id === params[0] &&
+                 f.estado_vinculacion === 'VINCULADO' &&
+                 (ahora - new Date(f.created_at).getTime()) <= VENTANA_MS;
+        })
+        .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
+      return Promise.resolve({ rows: candidatos.length > 0 ? [candidatos[0]] : [] });
     }
 
     // --- Cualquier otra query (tablas legacy: pausados, conversaciones, etc.) ---

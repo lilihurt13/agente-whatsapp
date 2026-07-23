@@ -2243,6 +2243,83 @@ async function manejarEventoLeadgen(value) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 1B (23 jul) — Olivia usa las respuestas de los 3 formularios de
+// Lead Ads (Repisa, Mesa Auxiliar, Escritorio) para personalizar su primer
+// mensaje, en vez de repetir el saludo largo que Meta ya muestra en el
+// propio formulario. Ver whatsapp_agent.js:procesarMensaje() para dónde se
+// usa esto.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Busca, para un lead dado, el formulario de Lead Ads vinculado más
+// reciente — solo si quedó VINCULADO (nunca PENDIENTE/FALLIDO) y dentro de
+// una ventana de 48h desde que llegó el evento leadgen. Fuera de esa
+// ventana se asume que el contexto ya no es relevante para un saludo
+// personalizado (decisión de Lili: "el ciclo de decisión puede tomar unos días").
+async function obtenerFormularioVinculadoReciente(leadId) {
+  if (!leadId) return null;
+  var r = await pool.query(
+    "SELECT * FROM lead_form_submissions WHERE lead_id = $1 AND estado_vinculacion = 'VINCULADO' " +
+    "AND created_at >= NOW() - INTERVAL '48 hours' ORDER BY created_at DESC LIMIT 1",
+    [leadId]
+  );
+  return r.rows.length > 0 ? r.rows[0] : null;
+}
+
+// Mejor esfuerzo para detectar a qué producto pertenece un formulario,
+// buscando palabras clave tanto en los nombres de campo (`name`, que Meta
+// slugifica del texto de la pregunta) como en los VALORES elegidos (que sí
+// suelen venir con el texto completo de la opción, ej. "Compacta
+// 35×45×50cm $390.000" — más confiable que adivinar el slug del nombre).
+// ⚠️ Los nombres exactos de campo no se han visto todavía en un payload
+// real — esto debe confirmarse/ajustarse con el primer lead de prueba
+// (ver docs/PHASE_1B_PLAN.md). Si no logra detectar el producto, no rompe
+// nada: simplemente no incluye el nombre del producto en el encabezado, y
+// Claude sigue teniendo las respuestas crudas como contexto.
+const CLAVES_PRODUCTO_FORMULARIO = [
+  { producto: 'Repisa Flotante', claves: ['repisa'] },
+  { producto: 'Mesa Auxiliar', claves: ['mesa auxiliar', 'mesa_auxiliar', 'versión', 'version', 'compacta', 'clásica', 'clasica'] },
+  { producto: 'Escritorio Flotante', claves: ['escritorio'] }
+];
+
+function detectarProductoFormulario(fieldData) {
+  if (!Array.isArray(fieldData)) return null;
+  var texto = fieldData.map(function(campo) {
+    var valores = Array.isArray(campo.values) ? campo.values.join(' ') : '';
+    return (campo.name || '') + ' ' + valores;
+  }).join(' ').toLowerCase();
+
+  for (var i = 0; i < CLAVES_PRODUCTO_FORMULARIO.length; i++) {
+    var item = CLAVES_PRODUCTO_FORMULARIO[i];
+    for (var j = 0; j < item.claves.length; j++) {
+      if (texto.indexOf(item.claves[j]) !== -1) return item.producto;
+    }
+  }
+  return null;
+}
+
+// Convierte field_data crudo (array de {name, values} de la Graph API) en
+// un bloque de texto legible para el system prompt de Claude. Excluye
+// nombre/teléfono (ya los tenemos como identidad del lead, no aportan
+// contexto de producto). Devuelve null si no hay nada útil que mostrar.
+function formatearRespuestasFormulario(submission) {
+  var fieldData = submission.field_data;
+  if (!Array.isArray(fieldData) || fieldData.length === 0) return null;
+
+  var producto = detectarProductoFormulario(fieldData);
+  var lineas = fieldData
+    .filter(function(campo) { return campo.name !== 'phone_number' && campo.name !== 'full_name'; })
+    .map(function(campo) {
+      var valor = Array.isArray(campo.values) ? campo.values.join(', ') : String(campo.values || '');
+      return '- ' + (campo.name || 'campo') + ': ' + valor;
+    });
+
+  if (lineas.length === 0) return null;
+
+  var encabezado = producto ? ('Formulario respondido (' + producto + '):') : 'Formulario respondido:';
+  return encabezado + '\n' + lineas.join('\n');
+}
+
 app.get('/webhook', function(req, res) {
   var mode = req.query['hub.mode'];
   var token = req.query['hub.verify_token'];
@@ -2375,7 +2452,10 @@ app.post('/webhook', function(req, res) {
           if (procesando[from]) { console.log('Ya procesando mensaje de: ' + from); return; }
 
           procesando[from] = true;
-          setTimeout(function() { procesarMensaje(from, texto); }, 500);
+          // 🆕 FASE 1B: se pasa el leadId (si lo tenemos) para que procesarMensaje
+          // pueda buscar un formulario de Lead Ads vinculado reciente.
+          var leadIdParaFormulario = resultadoCRM.lead ? resultadoCRM.lead.id : null;
+          setTimeout(function() { procesarMensaje(from, texto, leadIdParaFormulario); }, 500);
         });
       }
 
@@ -2441,7 +2521,7 @@ app.post('/webhook', function(req, res) {
   }
 });
 
-function procesarMensaje(from, texto) {
+function procesarMensaje(from, texto, leadId) {
   if (!conversaciones[from]) conversaciones[from] = [];
 
   var sinRespuestasAgente = conversaciones[from].filter(function(m) { return m.role === 'assistant'; }).length === 0;
@@ -2468,9 +2548,44 @@ function procesarMensaje(from, texto) {
     esPrimerMensaje = sinRespuestasAgente && mencionaRepisa;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🆕 FASE 1B (23 jul) — si es el primer mensaje del lead y tenemos su
+  // leadId, buscamos si respondió un formulario de Lead Ads vinculado y
+  // reciente (ventana de 48h). Si lo hay, Meta ya le mostró el saludo largo
+  // y las características/precio de referencia DENTRO del propio
+  // formulario — Olivia no debe repetirlo. Por eso, cuando hay formulario:
+  // se fuerza esPrimerMensaje a false (evita el mensaje promocional fijo
+  // de "PASO 1") y se le agrega el contexto del formulario al system
+  // prompt para que Claude responda directo con reconocimiento +
+  // características + precio + cierre, aplicando las reglas de producto
+  // que YA existen en getSystemPrompt() — no se reescribe ninguna regla
+  // de precio/producto aquí.
+  //
+  // Si no hay leadId, no es el primer mensaje, o no hay formulario
+  // vinculado reciente: promesaFormulario resuelve a null y el
+  // comportamiento es idéntico al de antes de la Fase 1B.
+  // ═══════════════════════════════════════════════════════════════════════
+  var promesaFormulario = (sinRespuestasAgente && leadId)
+    ? obtenerFormularioVinculadoReciente(leadId).catch(function(e) {
+        console.error('Error buscando formulario vinculado para lead ' + leadId + ':', e.message);
+        return null;
+      })
+    : Promise.resolve(null);
+
+  promesaFormulario.then(function(formularioVinculado) {
+  var bloqueFormulario = formularioVinculado ? formatearRespuestasFormulario(formularioVinculado) : null;
+  if (bloqueFormulario) {
+    esPrimerMensaje = false; // el saludo largo ya lo vio en el formulario de Meta — no se repite
+    console.log('📋 Contexto de formulario aplicado al primer mensaje de ' + from);
+  }
+
   var systemConContexto = getSystemPrompt();
   if (notas[from] && notas[from].trim() !== '') {
     systemConContexto += '\n\nNOTA PRIVADA DE LILI SOBRE ESTE LEAD (información de contexto, puede venir de audios, fotos, o conversaciones fuera del sistema — tenla en cuenta para tu respuesta y seguimiento):\n"' + notas[from] + '"';
+  }
+  if (bloqueFormulario) {
+    systemConContexto += '\n\n' + bloqueFormulario +
+      '\n\nEste lead ya vio tu saludo y las características/precio de referencia en el mensaje de bienvenida del formulario de Meta antes de escribir por WhatsApp — NO vuelvas a saludar largo ni repitas la introducción. Reconoce brevemente sus respuestas, confirma características y precio siguiendo tus reglas de este producto (características antes que precio, siempre), y cierra con una pregunta de acción concreta.';
   }
 
   // Si el último mensaje del lead es una imagen real (ya descargada y subida a
@@ -2600,6 +2715,7 @@ function procesarMensaje(from, texto) {
     }, 3000);
   });
   }); // cierra promesaMensajes.then
+  }); // cierra promesaFormulario.then
 }
 
 const FOTOS = {
@@ -2770,6 +2886,10 @@ app.capturarReferral = capturarReferral;
 app.manejarEventoLeadgen = manejarEventoLeadgen;
 app.extraerTelefonoDeFieldData = extraerTelefonoDeFieldData;
 app.registrarEventoLead = registrarEventoLead;
+app.obtenerFormularioVinculadoReciente = obtenerFormularioVinculadoReciente;
+app.formatearRespuestasFormulario = formatearRespuestasFormulario;
+app.detectarProductoFormulario = detectarProductoFormulario;
+app.procesarMensaje = procesarMensaje;
 // Solo para pruebas: permite inyectar un pool simulado. Nunca se llama en
 // producción (Railway arranca con `node whatsapp_agent.js`, no hace `require`
 // de este archivo desde otro módulo).
