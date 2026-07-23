@@ -5,7 +5,8 @@
   "main": "whatsapp_agent.js",
   "scripts": {
     "start": "node whatsapp_agent.js",
-    "dev": "nodemon whatsapp_agent.js"
+    "dev": "nodemon whatsapp_agent.js",
+    "test": "node --test --test-concurrency=1 test/phase1a.test.js"
   },
   "keywords": [
     "whatsapp",

@@ -43,7 +43,11 @@ function firmaWebhookValida(req) {
   return crypto.timingSafeEqual(bufFirma, bufEsperada);
 }
 
-const pool = new Pool({
+// 🆕 FASE 1A, PASO 11 — `let` en vez de `const` únicamente para permitir que
+// las pruebas inyecten un pool simulado (ver app.__setPoolParaPruebas más
+// abajo). En producción nunca se reasigna — sigue siendo el mismo Pool real
+// de siempre, con la misma configuración.
+let pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
@@ -70,7 +74,15 @@ async function crearIndices() {
     { nombre: 'idx_conversaciones_numero', sql: 'CREATE INDEX IF NOT EXISTS idx_conversaciones_numero ON conversaciones(numero)' },
     { nombre: 'idx_seguimientos_numero',   sql: 'CREATE INDEX IF NOT EXISTS idx_seguimientos_numero ON seguimientos(numero)' },
     { nombre: 'idx_pausados_numero',       sql: 'CREATE INDEX IF NOT EXISTS idx_pausados_numero ON pausados(numero)' },
-    { nombre: 'idx_notas_numero',          sql: 'CREATE INDEX IF NOT EXISTS idx_notas_numero ON notas(numero)' }
+    { nombre: 'idx_notas_numero',          sql: 'CREATE INDEX IF NOT EXISTS idx_notas_numero ON notas(numero)' },
+    // 🆕 FASE 1A — índices de las tablas nuevas del CRM
+    { nombre: 'idx_messages_lead_id',      sql: 'CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id)' },
+    { nombre: 'idx_lead_events_lead_id',    sql: 'CREATE INDEX IF NOT EXISTS idx_lead_events_lead_id ON lead_events(lead_id)' },
+    { nombre: 'idx_lead_events_event_type', sql: 'CREATE INDEX IF NOT EXISTS idx_lead_events_event_type ON lead_events(event_type)' },
+    { nombre: 'idx_lead_events_created_at', sql: 'CREATE INDEX IF NOT EXISTS idx_lead_events_created_at ON lead_events(created_at)' },
+    // 🆕 FASE 1A, PASO 7 — índices de lead_form_submissions
+    { nombre: 'idx_lead_form_submissions_lead_id', sql: 'CREATE INDEX IF NOT EXISTS idx_lead_form_submissions_lead_id ON lead_form_submissions(lead_id)' },
+    { nombre: 'idx_lead_form_submissions_estado',  sql: 'CREATE INDEX IF NOT EXISTS idx_lead_form_submissions_estado ON lead_form_submissions(estado_vinculacion)' }
   ];
 
   for (var i = 0; i < indices.length; i++) {
@@ -90,6 +102,113 @@ async function inicializarBD() {
     await pool.query('CREATE TABLE IF NOT EXISTS seguimientos (numero TEXT PRIMARY KEY, estado TEXT NOT NULL, timestamp BIGINT NOT NULL, intentos INT NOT NULL DEFAULT 0, ultimo_mensaje_lead BIGINT)');
     await pool.query('CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)');
     await pool.query('CREATE TABLE IF NOT EXISTS notas (numero TEXT PRIMARY KEY, nota TEXT)');
+
+    // ═══════════════════════════════════════════════════════════════════
+    // 🆕 FASE 1A (22 jul): tablas nuevas del CRM (leads, messages,
+    // lead_events). Conviven en paralelo con las tablas legacy de arriba
+    // — no las reemplazan ni les quitan lectura/escritura todavía. Ver
+    // docs/PHASE_1A_ROLLBACK.md para el procedimiento de reversión.
+    // ═══════════════════════════════════════════════════════════════════
+    await pool.query(
+      'CREATE TABLE IF NOT EXISTS leads (' +
+      'id SERIAL PRIMARY KEY, ' +
+      'whatsapp_phone TEXT UNIQUE NOT NULL, ' +
+      'display_name TEXT, ' +
+      'source TEXT, ' +
+      'product TEXT, ' +
+      'city TEXT, ' +
+      "owner TEXT NOT NULL DEFAULT 'OLIVIA', " +
+      'olivia_enabled BOOLEAN NOT NULL DEFAULT true, ' +
+      "lifecycle_stage TEXT NOT NULL DEFAULT 'NEW', " +
+      'lead_temperature TEXT, ' +
+      'qualification_status TEXT, ' +
+      'campaign_id TEXT, ' +
+      'campaign_name TEXT, ' +
+      'adset_id TEXT, ' +
+      'adset_name TEXT, ' +
+      'ad_id TEXT, ' +
+      'ad_name TEXT, ' +
+      'form_id TEXT, ' +
+      'form_name TEXT, ' +
+      "referral_data JSONB NOT NULL DEFAULT '{}', " +
+      "lead_form_data JSONB NOT NULL DEFAULT '{}', " +
+      'first_contact_at TIMESTAMPTZ, ' +
+      'last_customer_message_at TIMESTAMPTZ, ' +
+      'last_business_message_at TIMESTAMPTZ, ' +
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), ' +
+      'updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+      ')'
+    );
+
+    await pool.query(
+      'CREATE TABLE IF NOT EXISTS messages (' +
+      'id BIGSERIAL PRIMARY KEY, ' +
+      'lead_id INTEGER NOT NULL REFERENCES leads(id), ' +
+      'whatsapp_message_id TEXT UNIQUE, ' +
+      'direction TEXT NOT NULL, ' +
+      'sender_type TEXT NOT NULL, ' +
+      'message_type TEXT, ' +
+      'text_content TEXT, ' +
+      'media_id TEXT, ' +
+      "raw_payload JSONB NOT NULL DEFAULT '{}', " +
+      'occurred_at TIMESTAMPTZ, ' +
+      'received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), ' +
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+      ')'
+    );
+
+    await pool.query(
+      'CREATE TABLE IF NOT EXISTS lead_events (' +
+      'id BIGSERIAL PRIMARY KEY, ' +
+      // lead_id es NULLABLE a propósito (desde el Paso 7): un evento leadgen
+      // puede llegar y necesitar quedar registrado (LEAD_FORM_WEBHOOK_RECEIVED,
+      // LEAD_FORM_DATA_RETRIEVED) ANTES de que exista o se pueda vincular un
+      // lead de WhatsApp. Ver lead_form_submissions más abajo.
+      'lead_id INTEGER REFERENCES leads(id), ' +
+      'event_type TEXT NOT NULL, ' +
+      'actor TEXT, ' +
+      'source TEXT, ' +
+      "metadata JSONB NOT NULL DEFAULT '{}', " +
+      'whatsapp_message_id TEXT, ' +
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+      ')'
+    );
+    // Defensivo/idempotente: por si esta tabla ya se hubiera creado antes con
+    // NOT NULL en una ejecución previa de esta misma rama de desarrollo.
+    await pool.query('ALTER TABLE lead_events ALTER COLUMN lead_id DROP NOT NULL');
+
+    // ═══════════════════════════════════════════════════════════════════
+    // 🆕 FASE 1A, PASO 7 (22 jul) — lead_form_submissions.
+    // Tabla NUEVA, no prevista en el esquema original del Paso 3. Necesaria
+    // porque un evento leadgen de Meta Lead Ads NO trae un número de
+    // WhatsApp — solo `leadgen_id`, `form_id`, `ad_id`, `page_id`. Hasta que
+    // se pueda vincular con un lead real (por teléfono, si el formulario lo
+    // pide), el registro vive aquí como "lead externo pendiente de
+    // vinculación", tal como pide la sección 7 del prompt de Fase 1A.
+    //
+    // 🔄 ACTUALIZACIÓN (22 jul 2026): Lili confirmó que ya activó la
+    // suscripción al campo de webhook `leadgen` en el Meta App Dashboard
+    // ("Se suscribió correctamente al campo del webhook leadgen v25.0").
+    // Con esto, el evento YA PUEDE llegar a este endpoint. Sigue habiendo
+    // dos cosas sin verificar antes de dar esto por completamente activo
+    // — ver el banner grande junto a manejarEventoLeadgen() para el detalle
+    // y los pasos exactos a confirmar antes de generar un lead de prueba.
+    // ═══════════════════════════════════════════════════════════════════
+    await pool.query(
+      'CREATE TABLE IF NOT EXISTS lead_form_submissions (' +
+      'id SERIAL PRIMARY KEY, ' +
+      'leadgen_id TEXT UNIQUE NOT NULL, ' +
+      'page_id TEXT, ' +
+      'form_id TEXT, ' +
+      'ad_id TEXT, ' +
+      'adgroup_id TEXT, ' +
+      "field_data JSONB NOT NULL DEFAULT '[]', " +
+      'lead_id INTEGER REFERENCES leads(id), ' +
+      "estado_vinculacion TEXT NOT NULL DEFAULT 'PENDIENTE', " +
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), ' +
+      'updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+      ')'
+    );
 
     await crearIndices();
 
@@ -325,6 +444,14 @@ function getNombreLead(numero) {
   return null;
 }
 
+// 🆕 FASE 1A, PASO 11 — igual que el guard de app.listen(): estos cronjobs
+// (seguimiento cada hora y reactivación de 12pm/7pm) solo deben correr en el
+// proceso real (`node whatsapp_agent.js`), nunca cuando un archivo de
+// pruebas hace `require(...)`. Sin este guard, cada `require` desde una
+// prueba dejaba un setInterval vivo que impedía que el proceso de Node
+// terminara solo (el test runner se quedaba colgado esperando que el event
+// loop se vaciara). No cambia nada del comportamiento en producción.
+if (require.main === module) {
 setInterval(function() {
   if (!bdLista) return;
   var ahora = Date.now();
@@ -377,6 +504,7 @@ setInterval(function() {
     }
   }
 }, 60 * 60 * 1000);
+} // cierra el guard require.main === module del cronjob de seguimiento
 
 var ultimaTandaReactivacion = null;
 
@@ -385,6 +513,7 @@ function mensajeReactivacion(intento) {
   return 'Hola! 😊 No hay afán. Si en algún momento quieres retomar, aquí estoy con gusto 🌿';
 }
 
+if (require.main === module) {
 setInterval(function() {
   if (!bdLista) return;
   var ahoraUTC = new Date();
@@ -443,6 +572,7 @@ setInterval(function() {
   });
 
 }, 60 * 60 * 1000);
+} // cierra el guard require.main === module del cronjob de reactivación
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🎯 CAMPAÑA "JULIO DE ROBLE" — 2 al 20 de julio de 2026
@@ -1328,10 +1458,13 @@ app.get('/panel/chat', function(req, res) {
   html += '.media-tag{font-style:italic;color:#5a534b}';
   html += '.btn-media{flex:1;border:1px solid #cdbfae;background:#fff;color:#5a534b;border-radius:8px;padding:9px 4px;font-size:12px;font-weight:600;cursor:pointer}';
   html += '.ts{font-size:11px;color:#999;margin-top:4px;text-align:right}';
+  // 🆕 FASE 1A, PASO 9 — aviso de bajo impacto sobre mensajes manuales de WhatsApp Business
+  html += '.aviso-manual{background:#fff6d9;color:#6b5a1e;font-size:12px;padding:8px 12px;text-align:center;border-bottom:1px solid #e8dca0}';
   html += '</style></head><body>';
   html += '<div class="top"><a href="/panel?token=' + CONTROL_TOKEN + '">← Volver a leads</a>';
   html += '<div class="n">+' + escapeHtml(numero) + '</div>';
   html += '<div class="est">' + estadoLegible(numero) + '</div></div>';
+  html += '<div class="aviso-manual">Para que Olivia conserve el contexto completo, responde desde este panel o registra aquí la respuesta enviada por WhatsApp Business.</div>';
   html += '<div class="wrap">';
 
   if (conv.length === 0) {
@@ -1627,8 +1760,487 @@ app.post('/panel/reactivar-tanda', function(req, res) {
   res.json({ ok: true, enviados: numerosLimpios.length });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 1A, PASO 9 (22 jul) — registro de mensaje manual de Lili.
+//
+// Hallazgo del informe de Fase 0: los mensajes que Lili escribe manualmente
+// desde la app de WhatsApp Business NO llegan a este backend (no hay forma
+// de interceptarlos por webhook). Este endpoint NO resuelve esa limitación
+// técnica — es un registro manual: Lili (u otra persona con el panel)
+// escribe aquí lo que YA respondió por otro canal, para que quede en la
+// línea de tiempo de `messages` y Olivia no pierda contexto ni vuelva a
+// escribirle a un lead que Lili ya atendió.
+//
+// A propósito, en esta primera versión:
+//   - NO envía nada por WhatsApp (Bearer/Graph API) — es solo un registro.
+//   - Sí pausa a Olivia para ese lead, igual que hace /panel/enviar cuando
+//     Lili responde de verdad desde el panel (mismo criterio, mismo
+//     marcarPausado(), misma protección de LILI_NUMERO incluida gratis).
+// ═══════════════════════════════════════════════════════════════════════════
+app.post('/api/leads/:leadId/manual-message', function(req, res) {
+  if (!tokenValido(req.body.token, CONTROL_TOKEN)) return res.status(403).json({ ok: false, error: 'No autorizado' });
+
+  var leadId = parseInt(req.params.leadId, 10);
+  var texto = typeof req.body.text === 'string' ? req.body.text.trim() : '';
+  var nota = typeof req.body.internal_note === 'string' && req.body.internal_note.trim() ? req.body.internal_note.trim() : null;
+
+  if (!Number.isInteger(leadId) || leadId <= 0) return res.status(400).json({ ok: false, error: 'leadId inválido' });
+  if (!texto) return res.status(400).json({ ok: false, error: 'text es requerido' });
+
+  var occurredAt = new Date();
+  if (req.body.occurred_at) {
+    var fechaProvista = new Date(req.body.occurred_at);
+    if (!isNaN(fechaProvista.getTime())) occurredAt = fechaProvista;
+  }
+
+  pool.query('SELECT * FROM leads WHERE id = $1', [leadId]).then(function(r) {
+    if (r.rows.length === 0) return res.status(404).json({ ok: false, error: 'Lead no encontrado' });
+    var lead = r.rows[0];
+
+    return pool.query(
+      'INSERT INTO messages (lead_id, whatsapp_message_id, direction, sender_type, message_type, text_content, raw_payload, occurred_at) ' +
+      'VALUES ($1, NULL, $2, $3, $4, $5, $6, $7) RETURNING id',
+      [
+        lead.id, 'OUTBOUND', 'LILI', 'text', texto,
+        JSON.stringify({ registrado_manualmente: true, internal_note: nota }),
+        occurredAt
+      ]
+    ).then(function(insertRes) {
+      var mensajeId = insertRes.rows[0].id;
+
+      return pool.query(
+        "UPDATE leads SET owner = 'LILI', olivia_enabled = false, last_business_message_at = NOW(), updated_at = NOW() WHERE id = $1",
+        [lead.id]
+      ).then(function() {
+        registrarEventoLead(lead.id, 'MANUAL_MESSAGE_RECORDED', {
+          actor: 'LILI',
+          source: 'panel',
+          metadata: { via: 'panel_manual_endpoint', internal_note: nota }
+        });
+
+        // Mantiene sincronizado el sistema legacy: sin esto, `pausados[numero]`
+        // seguiría vacío y Olivia le seguiría respondiendo automáticamente a
+        // un lead que Lili ya atendió por otro canal. marcarPausado() ya trae
+        // su propia protección de LILI_NUMERO incluida.
+        marcarPausado(lead.whatsapp_phone);
+
+        console.log('📝 Mensaje manual registrado para lead ' + lead.whatsapp_phone + ' (id=' + lead.id + ')');
+        res.json({ ok: true, messageId: mensajeId });
+      });
+    });
+  }).catch(function(e) {
+    console.error('Error registrando mensaje manual para lead ' + leadId + ':', e.message);
+    res.status(500).json({ ok: false, error: 'Error interno' });
+  });
+});
+
 function escapeHtml(texto) {
   return String(texto).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 1A (22 jul) — CAPA DE COMPATIBILIDAD DEL CRM (leads / messages /
+// lead_events). Todo lo de esta sección corre EN PARALELO al sistema legacy
+// (conversaciones/pausados/seguimientos/notas) sin sustituirlo ni alterar su
+// comportamiento. Nada aquí bloquea ni retrasa el flujo existente: son
+// escrituras adicionales, best-effort, con manejo de error que solo loguea.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Mapea el estado legacy de seguimientos al lifecycle_stage de leads.
+// No se borran ni renombran los estados antiguos — este mapa es de solo lectura.
+const MAPA_LIFECYCLE_STAGE = {
+  saludo_sin_respuesta: 'CONTACTED',
+  esperando_info: 'WAITING_CUSTOMER_INFO',
+  esperando_decision: 'WAITING_DECISION',
+  cotizacion_enviada: 'QUOTED',
+  cerrado_venta: 'WON',
+  cerrado_perdido: 'LOST',
+  cerrado_sin_respuesta: 'DORMANT'
+};
+
+// owner/olivia_enabled iniciales, derivados del estado legacy de `pausados`
+// en el momento de creación del lead (mapeo sugerido en la Fase 1A).
+function mapearEstadoInicialLead(numero) {
+  var estaPausado = !!pausados[numero];
+  return {
+    owner: estaPausado ? 'LILI' : 'OLIVIA',
+    oliviaEnabled: !estaPausado
+  };
+}
+
+function registrarEventoLead(leadId, eventType, opts) {
+  opts = opts || {};
+  return pool.query(
+    'INSERT INTO lead_events (lead_id, event_type, actor, source, metadata, whatsapp_message_id) VALUES ($1, $2, $3, $4, $5, $6)',
+    [leadId, eventType, opts.actor || null, opts.source || null, JSON.stringify(opts.metadata || {}), opts.whatsappMessageId || null]
+  ).catch(function(e) {
+    console.error('Error registrando evento ' + eventType + ' (lead ' + leadId + '):', e.message);
+  });
+}
+
+// Busca un lead por whatsapp_phone; si no existe, lo crea de forma atómica
+// (INSERT ... ON CONFLICT DO NOTHING + re-SELECT si perdió la carrera contra
+// otra petición concurrente para el mismo número). Creación perezosa: no hay
+// backfill de números que ya existan en `conversaciones`.
+async function obtenerOCrearLead(numero) {
+  var existente = await pool.query('SELECT * FROM leads WHERE whatsapp_phone = $1', [numero]);
+  if (existente.rows.length > 0) {
+    console.log('🔎 Lead encontrado: ' + numero + ' (id=' + existente.rows[0].id + ')');
+    return { lead: existente.rows[0], creado: false };
+  }
+
+  var estadoInicial = mapearEstadoInicialLead(numero);
+  var seg = seguimientos[numero];
+  var lifecycleStage = (seg && MAPA_LIFECYCLE_STAGE[seg.estado]) ? MAPA_LIFECYCLE_STAGE[seg.estado] : 'NEW';
+
+  var insertado = await pool.query(
+    'INSERT INTO leads (whatsapp_phone, owner, olivia_enabled, lifecycle_stage, first_contact_at) ' +
+    'VALUES ($1, $2, $3, $4, NOW()) ON CONFLICT (whatsapp_phone) DO NOTHING RETURNING *',
+    [numero, estadoInicial.owner, estadoInicial.oliviaEnabled, lifecycleStage]
+  );
+  if (insertado.rows.length > 0) {
+    var nuevoLead = insertado.rows[0];
+    registrarEventoLead(nuevoLead.id, 'LEAD_CREATED', { actor: 'SYSTEM', source: 'webhook' });
+    console.log('🆕 Lead creado: ' + numero + ' (id=' + nuevoLead.id + ', owner=' + estadoInicial.owner + ', stage=' + lifecycleStage + ')');
+    return { lead: nuevoLead, creado: true };
+  }
+
+  // Perdió la carrera contra otra petición concurrente: el lead ya existe, lo recuperamos.
+  var reintento = await pool.query('SELECT * FROM leads WHERE whatsapp_phone = $1', [numero]);
+  console.log('🔎 Lead encontrado (tras perder carrera de creación): ' + numero + ' (id=' + reintento.rows[0].id + ')');
+  return { lead: reintento.rows[0], creado: false };
+}
+
+function guardarMensajeEnTabla(leadId, opts) {
+  return pool.query(
+    'INSERT INTO messages (lead_id, whatsapp_message_id, direction, sender_type, message_type, text_content, media_id, raw_payload, occurred_at) ' +
+    'VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (whatsapp_message_id) DO NOTHING RETURNING id',
+    [
+      leadId,
+      opts.whatsappMessageId || null,
+      opts.direction,
+      opts.senderType,
+      opts.messageType || null,
+      opts.textContent || null,
+      opts.mediaId || null,
+      JSON.stringify(opts.rawPayload || {}),
+      opts.occurredAt || new Date()
+    ]
+  );
+}
+
+function actualizarTimestampLead(leadId, columna) {
+  // columna solo puede ser uno de estos dos valores fijos — nunca viene del payload externo.
+  var col = columna === 'last_business_message_at' ? 'last_business_message_at' : 'last_customer_message_at';
+  return pool.query(
+    'UPDATE leads SET ' + col + ' = NOW(), updated_at = NOW() WHERE id = $1',
+    [leadId]
+  ).catch(function(e) {
+    console.error('Error actualizando ' + col + ' del lead ' + leadId + ':', e.message);
+  });
+}
+
+// Punto de entrada único que usa el webhook para capturar un mensaje en el
+// CRM nuevo (leads + messages + lead_events), sin tocar en ningún momento
+// `conversaciones`, `agregarMensaje`, ni el flujo que le llega a Claude.
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 1A, PASO 5 (22 jul) — idempotencia real por whatsapp_message_id.
+//
+// El INSERT ... ON CONFLICT (whatsapp_message_id) DO NOTHING de
+// guardarMensajeEnTabla() ES la protección real contra condiciones de
+// carrera: si dos entregas del mismo webhook llegan casi al mismo tiempo,
+// solo una gana el INSERT — un SELECT previo por separado dejaría una
+// ventana de carrera entre el SELECT y el INSERT. Por eso este helper NO
+// hace un SELECT de verificación aparte; usa el resultado del propio INSERT
+// como señal de "¿ya existía?".
+//
+// El llamador (el webhook) debe esperar esta promesa y usar `duplicado`
+// para decidir si sigue el flujo normal (Claude, envío, Telegram, seguimiento)
+// o lo corta ahí. Esto reemplaza la dependencia exclusiva del lock en
+// memoria `procesando[from]`, que no sobrevive un reinicio ni cubre reintentos
+// de Meta después de que `procesando[from]` ya se liberó.
+//
+// Fail-open: si la BD falla (verificando o guardando), NO se bloquea el
+// flujo comercial — Olivia debe seguir respondiendo aunque el tracking
+// nuevo falle. Se devuelve duplicado:false, error:true para que el
+// llamador trate el mensaje como nuevo y continúe como hoy.
+// ═══════════════════════════════════════════════════════════════════════════
+function capturarMensajeCRM(numero, opts) {
+  return obtenerOCrearLead(numero).then(function(resultado) {
+    var lead = resultado.lead;
+    return guardarMensajeEnTabla(lead.id, opts).then(function(res) {
+      if (res.rows.length === 0) {
+        // ON CONFLICT no insertó nada → whatsapp_message_id ya existía: duplicado real.
+        console.log('⏭️ Webhook duplicado ignorado (whatsapp_message_id ya procesado): ' + opts.whatsappMessageId);
+        registrarEventoLead(lead.id, 'DUPLICATE_WEBHOOK_IGNORED', {
+          actor: 'SYSTEM',
+          source: 'webhook',
+          whatsappMessageId: opts.whatsappMessageId
+        });
+        return { duplicado: true, lead: lead, mensajeId: null, error: false };
+      }
+      var mensajeId = res.rows[0].id;
+      var eventType = opts.direction === 'INBOUND' ? 'MESSAGE_RECEIVED' : 'MESSAGE_SENT_BY_OLIVIA';
+      if (opts.senderType === 'LILI') eventType = 'MANUAL_MESSAGE_RECORDED';
+      var metadataEvento = { message_type: opts.messageType };
+      if (opts.metadataExtra) {
+        Object.keys(opts.metadataExtra).forEach(function(k) { metadataEvento[k] = opts.metadataExtra[k]; });
+      }
+      registrarEventoLead(lead.id, eventType, {
+        actor: opts.senderType,
+        source: 'webhook',
+        whatsappMessageId: opts.whatsappMessageId,
+        metadata: metadataEvento
+      });
+      actualizarTimestampLead(lead.id, opts.direction === 'INBOUND' ? 'last_customer_message_at' : 'last_business_message_at');
+      return { duplicado: false, lead: lead, mensajeId: mensajeId, error: false };
+    });
+  }).catch(function(e) {
+    console.error('⚠️ Error de BD verificando/guardando mensaje en CRM para ' + numero + ' — se continúa el flujo normal (fail-open):', e.message);
+    return { duplicado: false, lead: null, mensajeId: null, error: true };
+  });
+}
+
+// Actualiza el text_content de un mensaje ya guardado en el CRM (usado
+// cuando la URL real de un archivo multimedia llega después del INSERT
+// inicial). No falla el flujo si mensajeId es null (mensaje duplicado o
+// error previo al capturar).
+function actualizarTextoMensajeCRM(mensajeId, textoNuevo) {
+  if (!mensajeId) return Promise.resolve();
+  return pool.query('UPDATE messages SET text_content = $1 WHERE id = $2', [textoNuevo, mensajeId])
+    .catch(function(e) { console.error('Error actualizando texto de mensaje CRM ' + mensajeId + ':', e.message); });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 1A, PASO 6 (22 jul) — captura de `message.referral` (Click-to-
+// WhatsApp Ads). Meta lo manda embebido dentro del mismo mensaje entrante
+// cuando el lead escribió por primera vez tras hacer clic en un anuncio —
+// no es un webhook aparte. No todos los campos llegan siempre; nunca se
+// asume su presencia y nunca se sobreescribe un valor ya confirmado con null.
+// ═══════════════════════════════════════════════════════════════════════════
+const CAMPOS_REFERRAL_CONOCIDOS = [
+  'source_url', 'source_type', 'source_id', 'headline', 'body', 'media_type',
+  'image_url', 'video_url', 'thumbnail_url', 'ctwa_clid', 'ad_id', 'campaign_id', 'adset_id'
+];
+
+// Se queda solo con las claves conocidas que realmente vinieron con valor
+// (nunca null/undefined/''), para que el merge en la BD no pueda borrar
+// un dato ya confirmado en un evento anterior.
+function extraerCamposReferralPresentes(referralRaw) {
+  var presentes = {};
+  CAMPOS_REFERRAL_CONOCIDOS.forEach(function(campo) {
+    var valor = referralRaw[campo];
+    if (valor !== undefined && valor !== null && valor !== '') presentes[campo] = valor;
+  });
+  return presentes;
+}
+
+function capturarReferral(lead, referralRaw, whatsappMessageId) {
+  if (!lead || !referralRaw || typeof referralRaw !== 'object') return;
+
+  var presentes = extraerCamposReferralPresentes(referralRaw);
+  var claves = Object.keys(presentes);
+
+  // Log sanitizado: solo nombres de claves y a qué lead se asoció — nunca
+  // se loguea nada que pudiera ser un token o credencial (este objeto nunca
+  // los trae; son datos de campaña/anuncio, no secretos de la API).
+  console.log('📎 Referral recibido — lead=' + lead.whatsapp_phone + ' (id=' + lead.id + '), claves presentes: ' +
+    (claves.length ? claves.join(', ') : '(ninguna de las conocidas)'));
+
+  pool.query(
+    'UPDATE leads SET ' +
+    'referral_data = referral_data || $2::jsonb, ' +
+    'campaign_id = COALESCE($3, campaign_id), ' +
+    'adset_id = COALESCE($4, adset_id), ' +
+    'ad_id = COALESCE($5, ad_id), ' +
+    "source = COALESCE(NULLIF(source, ''), 'ctwa_referral'), " +
+    'updated_at = NOW() ' +
+    'WHERE id = $1',
+    [lead.id, JSON.stringify(presentes), presentes.campaign_id || null, presentes.adset_id || null, presentes.ad_id || null]
+  ).then(function() {
+    registrarEventoLead(lead.id, 'REFERRAL_CAPTURED', {
+      actor: 'SYSTEM',
+      source: 'webhook',
+      whatsappMessageId: whatsappMessageId,
+      metadata: presentes
+    });
+  }).catch(function(e) {
+    console.error('Error guardando referral del lead ' + lead.id + ':', e.message);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 1A, PASO 7 (22 jul) — eventos `leadgen` de Meta Lead Ads.
+//
+// 🔄 ACTUALIZACIÓN (22 jul 2026) — PARCIALMENTE ACTIVO, AÚN SIN VERIFICAR DEL
+// TODO. Lili ya agregó el producto Lead Ads y activó la suscripción al campo
+// de webhook `leadgen` en el Meta App Dashboard (confirmado por Meta: "Se
+// suscribió correctamente al campo del webhook leadgen v25.0"). Con esto,
+// el punto 1 de la lista original de abajo YA quedó resuelto.
+//
+// Quedan DOS cosas más sin confirmar antes de que un lead de prueba real
+// funcione de punta a punta — si alguna falta, el evento puede no llegar
+// aquí, o llegar pero fallar en la llamada a Graph API (ver el try/catch de
+// manejarEventoLeadgen, que ya deja el error visible en logs y en
+// lead_form_submissions.estado_vinculacion = 'FALLIDO' de todas formas):
+//
+//   A. La PÁGINA de Facebook específica (la que corre los anuncios de Lead
+//      Ads) debe estar suscrita a ESTA app — esto es independiente de la
+//      suscripción a nivel de app que ya se hizo. Se verifica/activa desde
+//      Meta Business Suite (configuración de Lead Ads/Instant Forms de la
+//      página) o con `POST /{page-id}/subscribed_apps?subscribed_fields=leadgen`
+//      usando un token de página. Si esto falta, el evento webhook nunca
+//      llega — ni siquiera se vería un error, simplemente no pasaría nada.
+//
+//   B. El token usado para leer las respuestas (`GET /{leadgen_id}`, más
+//      abajo, hoy usa META_API_TOKEN) necesita el permiso `leads_retrieval`.
+//      Verificar en App Dashboard → App Review → Permisos y funciones si ya
+//      está concedido, o si hace falta pedir revisión. Si falta, el webhook
+//      SÍ llegará (evento LEAD_FORM_WEBHOOK_RECEIVED se registrará bien),
+//      pero la llamada a Graph API fallará con un error de permisos — se
+//      verá en logs como "Error consultando Graph API..." y en
+//      lead_form_submissions con estado_vinculacion = 'FALLIDO'.
+//
+// Recomendación antes de generar un lead de prueba con la herramienta de
+// Lead Ads Testing: confirmar A y B primero. Si no se confirman, igual se
+// puede generar el lead de prueba — el resultado en los logs/tabla dirá
+// exactamente cuál de los dos pasos falta (o si ya están completos).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const CAMPOS_TELEFONO_FORMULARIO = [
+  'phone_number', 'phone', 'telefono', 'teléfono', 'whatsapp',
+  'numero_whatsapp', 'número_whatsapp', 'celular', 'numero_celular', 'número_celular'
+];
+
+// Busca, entre las respuestas del formulario (field_data de la Graph API),
+// una que parezca un número de teléfono reconocible. Nunca "adivina" — si
+// no hay un campo con nombre reconocible y un valor que pase esNumeroValido
+// tras limpiar el formato, devuelve null y la vinculación queda pendiente.
+function extraerTelefonoDeFieldData(fieldData) {
+  if (!Array.isArray(fieldData)) return null;
+  for (var i = 0; i < fieldData.length; i++) {
+    var campo = fieldData[i];
+    if (!campo || !campo.name || !Array.isArray(campo.values) || !campo.values[0]) continue;
+    var nombreNormalizado = String(campo.name).toLowerCase().trim();
+    if (CAMPOS_TELEFONO_FORMULARIO.indexOf(nombreNormalizado) === -1) continue;
+    var soloDigitos = String(campo.values[0]).replace(/\D/g, '');
+    if (esNumeroValido(soloDigitos)) return soloDigitos;
+  }
+  return null;
+}
+
+async function manejarEventoLeadgen(value) {
+  var leadgenId = value.leadgen_id;
+  var formId = value.form_id || null;
+  var pageId = value.page_id || null;
+  var adId = value.ad_id || null;
+  var adgroupId = value.adgroup_id || null;
+
+  if (!leadgenId) {
+    console.error('Evento leadgen sin leadgen_id — payload inesperado, se ignora');
+    return;
+  }
+
+  // Log sanitizado (instrumentación de la sección 7): solo IDs de campaña/
+  // formulario, nunca contenido de las respuestas.
+  console.log('📋 Evento leadgen recibido — object=page, field=leadgen, leadgen_id=' + leadgenId +
+    ', form_id=' + formId + ', ad_id=' + adId + ', page_id=' + pageId);
+
+  // Idempotencia igual que con whatsapp_message_id: el propio INSERT ...
+  // ON CONFLICT DO NOTHING es la protección real contra reentregas/carreras.
+  var insertado = await pool.query(
+    'INSERT INTO lead_form_submissions (leadgen_id, page_id, form_id, ad_id, adgroup_id, estado_vinculacion) ' +
+    "VALUES ($1, $2, $3, $4, $5, 'PENDIENTE') ON CONFLICT (leadgen_id) DO NOTHING RETURNING id",
+    [leadgenId, pageId, formId, adId, adgroupId]
+  );
+  if (insertado.rows.length === 0) {
+    console.log('⏭️ Evento leadgen duplicado ignorado: ' + leadgenId);
+    registrarEventoLead(null, 'DUPLICATE_WEBHOOK_IGNORED', {
+      actor: 'SYSTEM',
+      source: 'leadgen_webhook',
+      metadata: { leadgen_id: leadgenId }
+    });
+    return;
+  }
+  var submissionId = insertado.rows[0].id;
+
+  registrarEventoLead(null, 'LEAD_FORM_WEBHOOK_RECEIVED', {
+    actor: 'SYSTEM',
+    source: 'leadgen_webhook',
+    metadata: { leadgen_id: leadgenId, form_id: formId, ad_id: adId, page_id: pageId }
+  });
+
+  // 🚧 A partir de aquí, la llamada a Graph API FALLARÁ hasta que se agregue
+  // el producto Lead Ads en el dashboard (ver banner arriba). Se deja el
+  // manejo de error explícito para que, cuando se active, el comportamiento
+  // ya esté listo sin tocar código de nuevo.
+  try {
+    var resp = await axios.get(
+      'https://graph.facebook.com/v21.0/' + leadgenId,
+      {
+        params: { fields: 'field_data' },
+        // TODO (cuando se active Lead Ads): verificar si META_API_TOKEN
+        // (token usado hoy para WhatsApp) tiene permiso leads_retrieval, o
+        // si hace falta un Page Access Token distinto para este endpoint.
+        headers: { Authorization: 'Bearer ' + META_API_TOKEN }
+      }
+    );
+    var fieldData = resp.data.field_data || [];
+
+    await pool.query(
+      'UPDATE lead_form_submissions SET field_data = $1, updated_at = NOW() WHERE id = $2',
+      [JSON.stringify(fieldData), submissionId]
+    );
+    registrarEventoLead(null, 'LEAD_FORM_DATA_RETRIEVED', {
+      actor: 'SYSTEM',
+      source: 'leadgen_webhook',
+      metadata: { leadgen_id: leadgenId, campos_recibidos: fieldData.map(function(f) { return f.name; }) }
+    });
+
+    var telefono = extraerTelefonoDeFieldData(fieldData);
+    if (telefono) {
+      var resultadoLead = await obtenerOCrearLead(telefono);
+      var leadVinculado = resultadoLead.lead;
+
+      await pool.query(
+        'UPDATE lead_form_submissions SET lead_id = $1, estado_vinculacion = \'VINCULADO\', updated_at = NOW() WHERE id = $2',
+        [leadVinculado.id, submissionId]
+      );
+      await pool.query(
+        'UPDATE leads SET lead_form_data = lead_form_data || $2::jsonb, form_id = COALESCE($3, form_id), ad_id = COALESCE($4, ad_id), updated_at = NOW() WHERE id = $1',
+        [leadVinculado.id, JSON.stringify({ leadgen_id: leadgenId, field_data: fieldData }), formId, adId]
+      );
+      registrarEventoLead(leadVinculado.id, 'LEAD_FORM_LINKED_TO_WHATSAPP', {
+        actor: 'SYSTEM',
+        source: 'leadgen_webhook',
+        metadata: { leadgen_id: leadgenId }
+      });
+      console.log('🔗 Formulario vinculado a WhatsApp — leadgen_id=' + leadgenId + ' → lead_id=' + leadVinculado.id);
+    } else {
+      await pool.query(
+        'UPDATE lead_form_submissions SET estado_vinculacion = \'FALLIDO\', updated_at = NOW() WHERE id = $1',
+        [submissionId]
+      );
+      registrarEventoLead(null, 'LEAD_FORM_LINK_FAILED', {
+        actor: 'SYSTEM',
+        source: 'leadgen_webhook',
+        metadata: { leadgen_id: leadgenId, razon: 'sin_campo_telefono_reconocible' }
+      });
+      console.log('⚠️ No se pudo vincular el formulario a WhatsApp (leadgen_id=' + leadgenId + ') — sin campo de teléfono reconocible. Queda como lead externo pendiente de vinculación.');
+    }
+  } catch (e) {
+    var detalleError = e.response ? (e.response.status + ' ' + JSON.stringify(e.response.data)) : e.message;
+    console.error('❌ Error consultando Graph API para leadgen_id=' + leadgenId + ' (probablemente el producto Lead Ads todavía no está activo en el Meta App Dashboard):', detalleError);
+    await pool.query(
+      'UPDATE lead_form_submissions SET estado_vinculacion = \'FALLIDO\', updated_at = NOW() WHERE id = $1',
+      [submissionId]
+    ).catch(function() {});
+    registrarEventoLead(null, 'LEAD_FORM_LINK_FAILED', {
+      actor: 'SYSTEM',
+      source: 'leadgen_webhook',
+      metadata: { leadgen_id: leadgenId, razon: 'graph_api_error' }
+    });
+  }
 }
 
 app.get('/webhook', function(req, res) {
@@ -1653,6 +2265,29 @@ app.post('/webhook', function(req, res) {
     if (!entry) return;
     var value = entry[0].changes[0].value;
     if (!value) return;
+
+    // 🆕 FASE 1A, PASO 12 — log estructurado mínimo de "webhook recibido"
+    // (sección 12 del prompt). Sanitizado: solo el tipo de objeto y, si viene,
+    // el message_id — nunca el cuerpo completo del payload (podría incluir
+    // texto del cliente o datos de formulario).
+    console.log('📩 Webhook recibido — object=' + (req.body.object || 'desconocido') +
+      (value.messages && value.messages[0] ? ', message_id=' + value.messages[0].id : '') +
+      (value.leadgen_id ? ', leadgen_id=' + value.leadgen_id : ''));
+
+    // 🆕 FASE 1A, PASO 7 — eventos leadgen (Meta Lead Ads) llegan al MISMO
+    // webhook, distinguibles por req.body.object === 'page' y value.leadgen_id
+    // (en vez de value.messages/value.statuses del objeto whatsapp_business_account).
+    // Suscripción al campo `leadgen` YA ACTIVADA (22 jul 2026) — este bloque ya
+    // puede recibir tráfico real. Ver el banner grande junto a
+    // manejarEventoLeadgen() para lo que todavía falta confirmar (suscripción
+    // de la página específica + permiso leads_retrieval) antes de que la
+    // vinculación por Graph API funcione de punta a punta.
+    if (req.body.object === 'page' && value.leadgen_id) {
+      manejarEventoLeadgen(value).catch(function(e) {
+        console.error('Error procesando evento leadgen:', e.message);
+      });
+      return;
+    }
 
     // ANTES esto se ignoraba por completo. Meta manda aquí si un mensaje
     // realmente se entregó, se leyó, o FALLÓ (ej: ventana de 24h vencida).
@@ -1679,14 +2314,27 @@ app.post('/webhook', function(req, res) {
       if (esSaliente && message.type === 'text') {
         var leadNumero = message.to || null;
         if (leadNumero && esNumeroValido(leadNumero)) {
-          marcarPausado(leadNumero);
-          console.log('Lili escribió a ' + leadNumero + ' — número pausado automáticamente');
-          agregarMensaje(leadNumero, 'assistant', message.text.body);
-          var estadoDetectado = detectarEstadoPorMensajeLili(message.text.body);
-          if (estadoDetectado) {
-            activarSeguimiento(leadNumero, estadoDetectado);
-            console.log('Estado seguimiento activado para ' + leadNumero + ': ' + estadoDetectado);
-          }
+          capturarMensajeCRM(leadNumero, {
+            whatsappMessageId: message.id,
+            direction: 'OUTBOUND',
+            senderType: 'LILI',
+            messageType: 'text',
+            textContent: message.text.body,
+            rawPayload: message,
+            occurredAt: message.timestamp ? new Date(Number(message.timestamp) * 1000) : new Date(),
+            metadataExtra: { via: 'whatsapp_webhook_outbound' }
+          }).then(function(resultadoCRM) {
+            if (resultadoCRM.duplicado) return; // ya procesado — no repetir pausa/seguimiento
+
+            marcarPausado(leadNumero);
+            console.log('Lili escribió a ' + leadNumero + ' — número pausado automáticamente');
+            agregarMensaje(leadNumero, 'assistant', message.text.body);
+            var estadoDetectado = detectarEstadoPorMensajeLili(message.text.body);
+            if (estadoDetectado) {
+              activarSeguimiento(leadNumero, estadoDetectado);
+              console.log('Estado seguimiento activado para ' + leadNumero + ': ' + estadoDetectado);
+            }
+          });
         }
         return;
       }
@@ -1694,61 +2342,98 @@ app.post('/webhook', function(req, res) {
       if (message && message.type === 'text' && esNumeroValido(message.from)) {
         var from = message.from;
         var texto = message.text.body;
-        console.log('Mensaje de ' + from + ': ' + texto);
 
-        agregarMensaje(from, 'user', texto);
-        cancelarSeguimiento(from);
+        capturarMensajeCRM(from, {
+          whatsappMessageId: message.id,
+          direction: 'INBOUND',
+          senderType: 'CUSTOMER',
+          messageType: 'text',
+          textContent: texto,
+          rawPayload: message,
+          occurredAt: message.timestamp ? new Date(Number(message.timestamp) * 1000) : new Date()
+        }).then(function(resultadoCRM) {
+          // Idempotencia real: si whatsapp_message_id ya existía en `messages`,
+          // es un reintento/duplicado del webhook de Meta — no se vuelve a
+          // ejecutar IA, no se reenvía, no se reactiva seguimiento. Si hubo un
+          // error de BD verificando (resultadoCRM.error), se sigue el flujo
+          // normal (fail-open) para no perder el mensaje del cliente.
+          if (resultadoCRM.duplicado) return;
+          if (message.referral && resultadoCRM.lead) capturarReferral(resultadoCRM.lead, message.referral, message.id);
 
-        if (leadPrometioInfo(texto) && !pausados[from]) {
-          setTimeout(function() {
-            if (!pausados[from]) { activarSeguimiento(from, 'esperando_info'); }
-          }, 2000);
-        }
+          console.log('Mensaje de ' + from + ' (message_id=' + message.id + '): ' + texto);
+          agregarMensaje(from, 'user', texto);
+          cancelarSeguimiento(from);
 
-        if (pausadoTodo) { console.log('Pausado global (mensaje guardado, agente no responde)'); return; }
-        if (pausados[from]) { console.log('Numero pausado (mensaje guardado, agente no responde): ' + from); return; }
-        if (procesando[from]) { console.log('Ya procesando mensaje de: ' + from); return; }
+          if (leadPrometioInfo(texto) && !pausados[from]) {
+            setTimeout(function() {
+              if (!pausados[from]) { activarSeguimiento(from, 'esperando_info'); }
+            }, 2000);
+          }
 
-        procesando[from] = true;
-        setTimeout(function() { procesarMensaje(from, texto); }, 500);
+          if (pausadoTodo) { console.log('Pausado global (mensaje guardado, agente no responde)'); return; }
+          if (pausados[from]) { console.log('Numero pausado (mensaje guardado, agente no responde): ' + from); return; }
+          if (procesando[from]) { console.log('Ya procesando mensaje de: ' + from); return; }
+
+          procesando[from] = true;
+          setTimeout(function() { procesarMensaje(from, texto); }, 500);
+        });
       }
 
       if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && esNumeroValido(message.from)) {
         var fromMedia = message.from;
-        console.log('Mensaje tipo ' + message.type + ' de ' + fromMedia + ' — descargando y respondiendo');
-
-        if (pausadoTodo || pausados[fromMedia] || procesando[fromMedia]) return;
-
         var mediaObj = message[message.type]; // message.image, message.audio, etc.
         var mediaId = mediaObj && mediaObj.id;
         var esVideoTipo = message.type === 'audio'; // Cloudinary guarda audio como "video"
-
-        // Guardamos primero un marcador genérico (por si la descarga falla o tarda),
-        // y lo actualizamos con la URL real en cuanto la tengamos.
         var textoMedia = '[El cliente envió ' + (message.type === 'image' ? 'una imagen' : message.type === 'audio' ? 'un audio' : 'un archivo') + ']';
-        if (!conversaciones[fromMedia]) conversaciones[fromMedia] = [];
-        var indiceMensaje = conversaciones[fromMedia].length;
-        conversaciones[fromMedia].push({ role: 'user', content: textoMedia, ts: Date.now() });
-        if (conversaciones[fromMedia].length > 12) { conversaciones[fromMedia] = conversaciones[fromMedia].slice(-12); indiceMensaje = conversaciones[fromMedia].length - 1; }
-        guardarConversacion(fromMedia);
 
-        if (mediaId) {
-          descargarMediaDeMetaYSubir(mediaId, esVideoTipo).then(function(urlPublica) {
-            var prefijo = message.type === 'image' ? '[IMAGEN]' : message.type === 'audio' ? '[AUDIO]' : '[ARCHIVO]';
-            var contenidoConUrl = prefijo + ' ' + urlPublica;
-            // Actualiza el mensaje en el historial (si todavía está en la posición esperada)
-            if (conversaciones[fromMedia] && conversaciones[fromMedia][indiceMensaje] && conversaciones[fromMedia][indiceMensaje].content === textoMedia) {
-              conversaciones[fromMedia][indiceMensaje].content = contenidoConUrl;
-              guardarConversacion(fromMedia);
-            }
-            console.log('Media del lead guardada con URL: ' + urlPublica);
-          }).catch(function(error) {
-            console.error('Error descargando media del lead:', error.message);
-          });
-        }
+        capturarMensajeCRM(fromMedia, {
+          whatsappMessageId: message.id,
+          direction: 'INBOUND',
+          senderType: 'CUSTOMER',
+          messageType: message.type,
+          textContent: textoMedia,
+          mediaId: mediaId || null,
+          rawPayload: message,
+          occurredAt: message.timestamp ? new Date(Number(message.timestamp) * 1000) : new Date()
+        }).then(function(resultadoCRM) {
+          // Mismo criterio de idempotencia que el mensaje de texto: si ya
+          // existía el whatsapp_message_id, no se repite descarga, IA, ni envío.
+          if (resultadoCRM.duplicado) return;
+          if (message.referral && resultadoCRM.lead) capturarReferral(resultadoCRM.lead, message.referral, message.id);
 
-        procesando[fromMedia] = true;
-        setTimeout(function() { procesarMensaje(fromMedia, textoMedia); }, 500);
+          console.log('Mensaje tipo ' + message.type + ' de ' + fromMedia + ' (message_id=' + message.id + ') — descargando y respondiendo');
+
+          if (pausadoTodo || pausados[fromMedia] || procesando[fromMedia]) return;
+
+          // Guardamos primero un marcador genérico (por si la descarga falla o tarda),
+          // y lo actualizamos con la URL real en cuanto la tengamos.
+          if (!conversaciones[fromMedia]) conversaciones[fromMedia] = [];
+          var indiceMensaje = conversaciones[fromMedia].length;
+          conversaciones[fromMedia].push({ role: 'user', content: textoMedia, ts: Date.now() });
+          if (conversaciones[fromMedia].length > 12) { conversaciones[fromMedia] = conversaciones[fromMedia].slice(-12); indiceMensaje = conversaciones[fromMedia].length - 1; }
+          guardarConversacion(fromMedia);
+
+          if (mediaId) {
+            descargarMediaDeMetaYSubir(mediaId, esVideoTipo).then(function(urlPublica) {
+              var prefijo = message.type === 'image' ? '[IMAGEN]' : message.type === 'audio' ? '[AUDIO]' : '[ARCHIVO]';
+              var contenidoConUrl = prefijo + ' ' + urlPublica;
+              // Actualiza el mensaje en el historial (si todavía está en la posición esperada)
+              if (conversaciones[fromMedia] && conversaciones[fromMedia][indiceMensaje] && conversaciones[fromMedia][indiceMensaje].content === textoMedia) {
+                conversaciones[fromMedia][indiceMensaje].content = contenidoConUrl;
+                guardarConversacion(fromMedia);
+              }
+              if (resultadoCRM.mensajeId) {
+                actualizarTextoMensajeCRM(resultadoCRM.mensajeId, contenidoConUrl);
+              }
+              console.log('Media del lead guardada con URL: ' + urlPublica);
+            }).catch(function(error) {
+              console.error('Error descargando media del lead:', error.message);
+            });
+          }
+
+          procesando[fromMedia] = true;
+          setTimeout(function() { procesarMensaje(fromMedia, textoMedia); }, 500);
+        });
       }
     }
   } catch (error) {
@@ -2051,11 +2736,43 @@ function enviarMensaje(to, texto) {
   });
 }
 
-inicializarBD().then(function() {
-  app.listen(PORT, function() {
-    console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
-    console.log('🔎 Verificación LILI_NUMERO: "' + LILI_NUMERO + '" (longitud: ' + (LILI_NUMERO ? LILI_NUMERO.length : 0) + ' caracteres) — compara esto con tu número real, sin +, sin espacios');
+// 🆕 FASE 1A, PASO 11 — el arranque real del servidor (conectar a Postgres y
+// escuchar el puerto) solo debe pasar cuando este archivo se ejecuta
+// directamente (`node whatsapp_agent.js` / `npm start`), NO cuando un
+// archivo de pruebas hace `require(...)` para usar las funciones internas.
+// Sin este guard, cada `require` desde una prueba abriría un servidor HTTP
+// real de más. No cambia nada del comportamiento en producción: Railway
+// sigue arrancando con `node whatsapp_agent.js` (ver Procfile), que sí
+// cumple `require.main === module`.
+if (require.main === module) {
+  inicializarBD().then(function() {
+    app.listen(PORT, function() {
+      console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
+      console.log('🔎 Verificación LILI_NUMERO: "' + LILI_NUMERO + '" (longitud: ' + (LILI_NUMERO ? LILI_NUMERO.length : 0) + ' caracteres) — compara esto con tu número real, sin +, sin espacios');
+    });
   });
-});
+}
+
+// module.exports sigue siendo `app` para no romper nada que ya dependa de
+// requerir este archivo y obtener el Express app directamente (ej. si algo
+// externo ya lo hacía así) — las funciones internas nuevas que las pruebas
+// de la Fase 1A necesitan se cuelgan como propiedades del mismo `app`, en
+// vez de cambiar la forma del export.
+app.inicializarBD = inicializarBD;
+app.pool = pool;
+app.conversaciones = conversaciones;
+app.pausados = pausados;
+app.seguimientos = seguimientos;
+app.agregarMensaje = agregarMensaje;
+app.obtenerOCrearLead = obtenerOCrearLead;
+app.capturarMensajeCRM = capturarMensajeCRM;
+app.capturarReferral = capturarReferral;
+app.manejarEventoLeadgen = manejarEventoLeadgen;
+app.extraerTelefonoDeFieldData = extraerTelefonoDeFieldData;
+app.registrarEventoLead = registrarEventoLead;
+// Solo para pruebas: permite inyectar un pool simulado. Nunca se llama en
+// producción (Railway arranca con `node whatsapp_agent.js`, no hace `require`
+// de este archivo desde otro módulo).
+app.__setPoolParaPruebas = function(poolSimulado) { pool = poolSimulado; };
 
 module.exports = app;
