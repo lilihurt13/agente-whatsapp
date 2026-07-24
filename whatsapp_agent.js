@@ -2282,13 +2282,12 @@ const CLAVES_PRODUCTO_FORMULARIO = [
   { producto: 'Escritorio Flotante', claves: ['escritorio'] }
 ];
 
-function detectarProductoFormulario(fieldData) {
-  if (!Array.isArray(fieldData)) return null;
-  var texto = fieldData.map(function(campo) {
-    var valores = Array.isArray(campo.values) ? campo.values.join(' ') : '';
-    return (campo.name || '') + ' ' + valores;
-  }).join(' ').toLowerCase();
-
+// 🆕 AJUSTE 1 (23 jul) — núcleo compartido de detección de producto por
+// palabras clave. Antes vivía solo dentro de detectarProductoFormulario();
+// se extrajo para que detectarProductoDesdeReferral() (más abajo) reutilice
+// la MISMA lista de palabras clave, en vez de duplicarla.
+function detectarProductoPorTexto(textos) {
+  var texto = textos.filter(Boolean).join(' ').toLowerCase();
   for (var i = 0; i < CLAVES_PRODUCTO_FORMULARIO.length; i++) {
     var item = CLAVES_PRODUCTO_FORMULARIO[i];
     for (var j = 0; j < item.claves.length; j++) {
@@ -2296,6 +2295,15 @@ function detectarProductoFormulario(fieldData) {
     }
   }
   return null;
+}
+
+function detectarProductoFormulario(fieldData) {
+  if (!Array.isArray(fieldData)) return null;
+  var textos = fieldData.map(function(campo) {
+    var valores = Array.isArray(campo.values) ? campo.values.join(' ') : '';
+    return (campo.name || '') + ' ' + valores;
+  });
+  return detectarProductoPorTexto(textos);
 }
 
 // Convierte field_data crudo (array de {name, values} de la Graph API) en
@@ -2318,6 +2326,37 @@ function formatearRespuestasFormulario(submission) {
 
   var encabezado = producto ? ('Formulario respondido (' + producto + '):') : 'Formulario respondido:';
   return encabezado + '\n' + lineas.join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 AJUSTE 1 (23 jul) — cuando un lead llega de un anuncio (referral de
+// Click-to-WhatsApp) y escribe algo genérico sin nombrar el producto ni
+// haber llenado el formulario, Olivia no debe preguntar "¿qué mueble te
+// interesa?" — ya sabemos el producto por leads.referral_data. Mismo
+// patrón que el formulario (Fase 1B), pero disparado por el referral.
+//
+// Detección por palabras clave en headline/body/source_url (Opción B del
+// plan aprobado por Lili) en vez de una lista fija de ad_id — más robusto
+// ante anuncios nuevos y no depende de conseguir IDs desde Meta (fricción
+// ya vivida en sesiones anteriores). Reutiliza detectarProductoPorTexto(),
+// la misma lista de palabras clave que ya usa el formulario.
+// ═══════════════════════════════════════════════════════════════════════════
+function detectarProductoDesdeReferral(referralData) {
+  if (!referralData || typeof referralData !== 'object') return null;
+  return detectarProductoPorTexto([referralData.headline, referralData.body, referralData.source_url]);
+}
+
+// Arma el bloque de contexto del anuncio para el system prompt. Devuelve
+// null si no hay headline/body utilizable (no inventa nada).
+function formatearContextoReferral(referralData, producto) {
+  if (!referralData || typeof referralData !== 'object') return null;
+  var partes = [];
+  if (referralData.headline) partes.push('Titular del anuncio: ' + referralData.headline);
+  if (referralData.body) partes.push('Texto del anuncio: ' + referralData.body);
+  if (partes.length === 0) return null;
+
+  var encabezado = producto ? ('Lead proveniente de un anuncio (' + producto + '):') : 'Lead proveniente de un anuncio:';
+  return encabezado + '\n' + partes.join('\n');
 }
 
 app.get('/webhook', function(req, res) {
@@ -2454,8 +2493,12 @@ app.post('/webhook', function(req, res) {
           procesando[from] = true;
           // 🆕 FASE 1B: se pasa el leadId (si lo tenemos) para que procesarMensaje
           // pueda buscar un formulario de Lead Ads vinculado reciente.
+          // 🆕 AJUSTE 1: se pasa también referral_data (ya lo tenemos en memoria
+          // desde resultadoCRM.lead — sin consulta adicional a la BD) para el
+          // caso de leads sin formulario pero con anuncio de origen identificable.
           var leadIdParaFormulario = resultadoCRM.lead ? resultadoCRM.lead.id : null;
-          setTimeout(function() { procesarMensaje(from, texto, leadIdParaFormulario); }, 500);
+          var referralDataParaContexto = resultadoCRM.lead ? resultadoCRM.lead.referral_data : null;
+          setTimeout(function() { procesarMensaje(from, texto, leadIdParaFormulario, referralDataParaContexto); }, 500);
         });
       }
 
@@ -2521,7 +2564,7 @@ app.post('/webhook', function(req, res) {
   }
 });
 
-function procesarMensaje(from, texto, leadId) {
+function procesarMensaje(from, texto, leadId, referralData) {
   if (!conversaciones[from]) conversaciones[from] = [];
 
   var sinRespuestasAgente = conversaciones[from].filter(function(m) { return m.role === 'assistant'; }).length === 0;
@@ -2553,13 +2596,17 @@ function procesarMensaje(from, texto, leadId) {
   // leadId, buscamos si respondió un formulario de Lead Ads vinculado y
   // reciente (ventana de 48h). Si lo hay, Meta ya le mostró el saludo largo
   // y las características/precio de referencia DENTRO del propio
-  // formulario — Olivia no debe repetirlo. Por eso, cuando hay formulario:
-  // se fuerza esPrimerMensaje a false (evita el mensaje promocional fijo
-  // de "PASO 1") y se le agrega el contexto del formulario al system
-  // prompt para que Claude responda directo con reconocimiento +
-  // características + precio + cierre, aplicando las reglas de producto
-  // que YA existen en getSystemPrompt() — no se reescribe ninguna regla
-  // de precio/producto aquí.
+  // formulario — Olivia no debe repetirlo. La supresión del saludo largo la
+  // logra la INSTRUCCIÓN de texto que se agrega más abajo al system prompt
+  // (independiente de esPrimerMensaje). `esPrimerMensaje` en cambio solo
+  // controla el envío automático de las 2 fotos del producto — se fuerza a
+  // `true` (no `false`) para que las fotos SÍ se envíen también en este
+  // caso (decisión de Lili: "refuerza la venta en el momento de cierre").
+  //
+  // 🐛 FIX (23 jul, mismo día): esto antes decía `esPrimerMensaje = false`,
+  // lo cual bloqueaba las fotos por error — esPrimerMensaje es la ÚNICA
+  // variable que decide si se llama a enviarFotosSaludo() más abajo, y la
+  // supresión del saludo nunca dependió de ella. Corregido.
   //
   // Si no hay leadId, no es el primer mensaje, o no hay formulario
   // vinculado reciente: promesaFormulario resuelve a null y el
@@ -2575,8 +2622,26 @@ function procesarMensaje(from, texto, leadId) {
   promesaFormulario.then(function(formularioVinculado) {
   var bloqueFormulario = formularioVinculado ? formatearRespuestasFormulario(formularioVinculado) : null;
   if (bloqueFormulario) {
-    esPrimerMensaje = false; // el saludo largo ya lo vio en el formulario de Meta — no se repite
+    esPrimerMensaje = true; // asegura el envío de fotos también para leads de formulario
     console.log('📋 Contexto de formulario aplicado al primer mensaje de ' + from);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🆕 AJUSTE 1 (23 jul) — si NO hay formulario vinculado (prioridad del
+  // formulario sobre el referral, por ser más específico) y el lead no
+  // mencionó ningún producto explícitamente en su propio texto, pero sí
+  // tenemos referral_data identificable del anuncio de origen: mismo
+  // criterio que el formulario — inyecta el contexto del anuncio y fuerza
+  // esPrimerMensaje a true (fotos también aquí, mismo criterio aprobado).
+  // ═══════════════════════════════════════════════════════════════════════
+  var bloqueReferral = null;
+  if (!bloqueFormulario && sinRespuestasAgente && !mencionaRepisa && !mencionaOtroMueble && referralData) {
+    var productoReferral = detectarProductoDesdeReferral(referralData);
+    bloqueReferral = formatearContextoReferral(referralData, productoReferral);
+    if (bloqueReferral) {
+      esPrimerMensaje = true;
+      console.log('📎 Contexto de referral aplicado al primer mensaje de ' + from + (productoReferral ? ' (producto: ' + productoReferral + ')' : ''));
+    }
   }
 
   var systemConContexto = getSystemPrompt();
@@ -2586,6 +2651,10 @@ function procesarMensaje(from, texto, leadId) {
   if (bloqueFormulario) {
     systemConContexto += '\n\n' + bloqueFormulario +
       '\n\nEste lead ya vio tu saludo y las características/precio de referencia en el mensaje de bienvenida del formulario de Meta antes de escribir por WhatsApp — NO vuelvas a saludar largo ni repitas la introducción. Reconoce brevemente sus respuestas, confirma características y precio siguiendo tus reglas de este producto (características antes que precio, siempre), y cierra con una pregunta de acción concreta.';
+  }
+  if (bloqueReferral) {
+    systemConContexto += '\n\n' + bloqueReferral +
+      '\n\nEste lead llegó desde este anuncio y ya vio el mensaje de bienvenida de Meta antes de escribir — NO le preguntes genéricamente qué mueble le interesa. Reconoce que viene del anuncio, confirma características y precio de este producto siguiendo tus reglas (características antes que precio, siempre), y haz una pregunta de acción concreta para avanzar.';
   }
 
   // Si el último mensaje del lead es una imagen real (ya descargada y subida a
@@ -2889,6 +2958,9 @@ app.registrarEventoLead = registrarEventoLead;
 app.obtenerFormularioVinculadoReciente = obtenerFormularioVinculadoReciente;
 app.formatearRespuestasFormulario = formatearRespuestasFormulario;
 app.detectarProductoFormulario = detectarProductoFormulario;
+app.detectarProductoPorTexto = detectarProductoPorTexto;
+app.detectarProductoDesdeReferral = detectarProductoDesdeReferral;
+app.formatearContextoReferral = formatearContextoReferral;
 app.procesarMensaje = procesarMensaje;
 // Solo para pruebas: permite inyectar un pool simulado. Nunca se llama en
 // producción (Railway arranca con `node whatsapp_agent.js`, no hace `require`
