@@ -47,6 +47,13 @@ Configura esto en Meta Developers → Tu App → Webhooks. Además, copia el **A
 - ✅ Message sending
 - ✅ Basic responses
 
+## 📋 Documentación del CRM (Fase 1A/1B) y pendientes
+
+Ver `docs/`: `PHASE_1A_ROLLBACK.md` (backup/rollback), `PHASE_1A_PRIVACY.md`,
+`PHASE_1A_TESTING.md`, `PHASE_1B_PLAN.md`, y `PENDIENTES.md` (temas
+identificados, sin implementar todavía — ej. el formulario de Lead Ads no
+es obligatorio de facto).
+
 ## 📞 Soporte
 
 Para cambios, edita `whatsapp_agent.js` y haz push a GitHub. Railway redeploy automáticamente.
