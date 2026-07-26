@@ -280,6 +280,83 @@ function resolverPrecioRepisa(params, catalogoRepisas) {
   return resultado;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 COTIZADOR V2 REPISAS — FASE 3 de integración (26 jul, aprobada por Lili
+// en pasos: 1-preparación, 2-mapeo de flujo, 3-parser). Parser puro del tag
+// interno `[COTIZAR_REPISA:...]` que Claude emitirá cuando tenga datos
+// suficientes para cotizar una repisa — ver docs/COTIZADOR_V2_PLAN.md.
+// Todavía NO conectado a procesarMensaje() ni al webhook (eso es la
+// integración completa, fase posterior) — esto es solo el parser,
+// aislado y probado.
+//
+// Nunca calcula nada — solo extrae y valida la estructura del tag;
+// resolverPrecioRepisa() sigue siendo la única función que calcula precios.
+//
+// Decisión de negocio (26 jul): cantidad > 1 SIEMPRE escala a Lili — ya
+// existen reglas de descuento por volumen aprobadas que NO están
+// implementadas todavía (ver docs/PENDIENTES.md, Fase C futura:
+// calcularDescuentoPorVolumen()). Multiplicar el precio unitario directo
+// ignoraría esas reglas y podría cobrar de más. Por diseño, el prompt de
+// Claude deberá instruir no emitir el tag si cantidad > 1 (fase de
+// integración con el prompt, todavía no implementada) — este parser lo
+// señala explícitamente vía `elegibleParaCalculoAutomatico` como defensa
+// adicional, por si el modelo no sigue esa instrucción.
+// ═══════════════════════════════════════════════════════════════════════════
+const MAPA_MODALIDAD_TAG_A_FUNCION = {
+  instalado_medellin: 'instalado',
+  envio_nacional: 'enviado'
+  // 'recogida' se deja tal cual — resolverPrecioRepisa() ya la trata como
+  // modalidad no reconocida (Modo 3) y devuelve requiere_aprobacion, sin
+  // necesidad de traducción.
+};
+
+function extraerTagCotizarRepisa(textoRespuesta) {
+  if (typeof textoRespuesta !== 'string') return null;
+  var match = textoRespuesta.match(/\[COTIZAR_REPISA:([^\]]*)\]/);
+  if (!match) return null;
+
+  var crudo = {};
+  match[1].split(',').forEach(function(par) {
+    var idx = par.indexOf('=');
+    if (idx === -1) return;
+    crudo[par.slice(0, idx).trim()] = par.slice(idx + 1).trim();
+  });
+
+  var largoCm = Number(crudo.largo);
+  var profundidadCm = Number(crudo.prof);
+  var cantidadCruda = crudo.cantidad !== undefined ? Number(crudo.cantidad) : 1;
+
+  // Tag mal formado (largo/prof ausentes o no numéricos) — no hay datos
+  // suficientes para intentar nada, se trata como si no hubiera tag válido.
+  if (isNaN(largoCm) || isNaN(profundidadCm) || largoCm <= 0 || profundidadCm <= 0) return null;
+
+  var cantidad = (isNaN(cantidadCruda) || cantidadCruda < 1) ? 1 : cantidadCruda;
+  var modalidadTag = crudo.modalidad || null;
+  var modalidadParaResolver = (modalidadTag && MAPA_MODALIDAD_TAG_A_FUNCION[modalidadTag])
+    ? MAPA_MODALIDAD_TAG_A_FUNCION[modalidadTag]
+    : modalidadTag;
+
+  return {
+    tagEncontrado: true,
+    largoCm: largoCm,
+    profundidadCm: profundidadCm,
+    cantidad: cantidad,
+    ciudad: crudo.ciudad || null,
+    modalidadTag: modalidadTag,
+    modalidadParaResolver: modalidadParaResolver,
+    // Decisión de negocio: solo cantidad === 1 puede usar el cálculo
+    // automático de resolverPrecioRepisa(); cantidad > 1 siempre escala.
+    elegibleParaCalculoAutomatico: cantidad === 1
+  };
+}
+
+// Quita el tag del texto crudo de Claude. Uso previsto en la integración
+// completa (fase posterior): el tag nunca debe llegar visible al cliente.
+function quitarTagCotizarRepisa(textoRespuesta) {
+  if (typeof textoRespuesta !== 'string') return textoRespuesta;
+  return textoRespuesta.replace(/\[COTIZAR_REPISA:[^\]]*\]/g, '').trim();
+}
+
 async function crearIndices() {
   var indices = [
     { nombre: 'idx_conversaciones_numero', sql: 'CREATE INDEX IF NOT EXISTS idx_conversaciones_numero ON conversaciones(numero)' },
@@ -1285,6 +1362,26 @@ CUANDO ESCALAR (respuestas naturales y cálidas. Como Olivia es del equipo, SÍ 
 IMPORTANTE: [ESCALAR] es interno, el sistema lo elimina del mensaje al cliente y notifica a Lili.
 
 TIEMPO: NUNCA digas "en un momento" para cotizaciones — puede tomar horas o dias.
+
+COTIZADOR DE REPISAS — CÁLCULO DE PRECIO VÍA TAG INTERNO (esta sección tiene prioridad sobre cualquier instrucción anterior de calcular, dar, o leer directamente de una tabla el precio de una repisa):
+
+Tienes PROHIBIDO calcular, interpolar, estimar o redondear el precio de una repisa por tu cuenta — ni siquiera usando alguna tabla de precios mencionada en otra parte de este prompt. El precio de una repisa SIEMPRE lo calcula el sistema, nunca tú.
+
+Cuando el cliente quiera cotizar una repisa Y ya tengas estos 4 datos confirmados en la conversación — largo (cm), profundidad (cm), ciudad, y cantidad — Y la cantidad sea exactamente 1, responde ÚNICAMENTE con este tag interno, sin ningún otro texto antes o después, en este formato EXACTO:
+[COTIZAR_REPISA:largo=<numero>,prof=<numero>,cantidad=1,ciudad=<ciudad>,modalidad=<modalidad>]
+
+<modalidad> es una de estas tres:
+- instalado_medellin — el cliente está en Medellín o su área metropolitana cercana (instalación incluida). Es el valor por defecto si no queda claro que es de otra ciudad.
+- envio_nacional — el cliente confirmó que está en otra ciudad (sin instalación).
+- recogida — SOLO si el cliente dice explícitamente que puede recoger el pedido él mismo.
+
+Un sistema interno calculará el precio exacto a partir de este tag y te lo entregará después para que redactes la respuesta final al cliente — tú nunca calculas, solo identificas cuándo ya tienes los 4 datos y emites el tag.
+
+Este tag es completamente interno. NUNCA lo muestres junto con otro texto, NUNCA lo menciones ni lo expliques al cliente, NUNCA digas que existe un "tag" o un "sistema de cálculo" — el cliente jamás debe ver la palabra COTIZAR_REPISA ni nada parecido.
+
+Si te falta CUALQUIERA de los 4 datos, NO emitas el tag — en vez de eso, pregunta con naturalidad lo que falte, un dato a la vez, como ya haces normalmente.
+
+Si la cantidad es mayor a 1, NUNCA emitas el tag — el sistema todavía no calcula automáticamente descuentos por volumen. Reconoce la cantidad con calidez, confirma que todas las piezas son iguales, y escala con [ESCALAR] sin dar ningún precio, ni siquiera aproximado.
 ${reglasCampana}`;
 }
 
@@ -3230,6 +3327,8 @@ app.parsearCsvPreciosRepisas = parsearCsvPreciosRepisas;
 app.calcularRequiereAprobacionDescuento = calcularRequiereAprobacionDescuento;
 app.construirCatalogoRepisasV2 = construirCatalogoRepisasV2;
 app.sembrarPreciosRepisas = sembrarPreciosRepisas;
+app.extraerTagCotizarRepisa = extraerTagCotizarRepisa;
+app.quitarTagCotizarRepisa = quitarTagCotizarRepisa;
 app.__setPreciosRepisasParaPruebas = function(filas) { preciosRepisas = filas; };
 app.procesarMensaje = procesarMensaje;
 // Solo para pruebas: permite inyectar un pool simulado. Nunca se llama en

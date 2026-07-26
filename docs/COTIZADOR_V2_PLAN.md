@@ -1,5 +1,15 @@
 # Cotizador de repisas v2 — estado y plan de integración
 
+## 🚨 REGLA DURA antes de cualquier push a main
+
+**La Fase 4 (instrucción del tag en `getSystemPrompt()`) y la Fase 5
+(interceptar el tag + segunda llamada a Claude) deben mergearse juntas a
+`main`, NUNCA la Fase 4 sola.** Si se desplegara la Fase 4 sin la Fase 5,
+Claude empezaría a emitir `[COTIZAR_REPISA:...]` en producción sin que
+nada lo intercepte — el tag llegaría **crudo y visible al cliente** por
+WhatsApp. Verificar esto explícitamente antes de autorizar cualquier
+push que incluya el bloque de `getSystemPrompt()` de la Fase 4.
+
 ## ⚠️ Estado actual: backend probado, NO conectado al flujo conversacional
 
 Este commit deja lista la capa de datos y cálculo del cotizador v2:
