@@ -25,6 +25,7 @@ function crearPoolSimulado() {
     messages: [],
     leadEvents: [],
     leadFormSubmissions: [],
+    preciosRepisas: [],
     siguienteLeadId: 1,
     siguienteMensajeId: 1,
     siguienteEventoId: 1,
@@ -166,6 +167,29 @@ function crearPoolSimulado() {
         })
         .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
       return Promise.resolve({ rows: candidatos.length > 0 ? [candidatos[0]] : [] });
+    }
+
+    // --- precios_repisas: siembra idempotente (INSERT ... ON CONFLICT DO UPDATE) ---
+    if (s.indexOf('INSERT INTO precios_repisas (prof_cm, largo_cm, costo_real_instalado, tecnico_instalado, comercial_instalado,') === 0) {
+      const [
+        prof_cm, largo_cm, costo_real_instalado, tecnico_instalado, comercial_instalado,
+        costo_real_enviado, tecnico_enviado, comercial_enviado, envio_real_estimado,
+        precio_minimo_aprobado, alerta, requiere_aprobacion_descuento
+      ] = params;
+      const existente = estado.preciosRepisas.find(function(f) { return f.prof_cm === prof_cm && f.largo_cm === largo_cm; });
+      const fila = {
+        prof_cm, largo_cm, costo_real_instalado, tecnico_instalado, comercial_instalado,
+        costo_real_enviado, tecnico_enviado, comercial_enviado, envio_real_estimado,
+        precio_minimo_aprobado, alerta, requiere_aprobacion_descuento
+      };
+      if (existente) { Object.assign(existente, fila); } else { estado.preciosRepisas.push(fila); }
+      return Promise.resolve({ rows: [] });
+    }
+
+    // --- precios_repisas: carga en memoria ---
+    if (s.indexOf('SELECT * FROM precios_repisas ORDER BY prof_cm, largo_cm') === 0) {
+      const ordenado = estado.preciosRepisas.slice().sort(function(a, b) { return a.prof_cm - b.prof_cm || a.largo_cm - b.largo_cm; });
+      return Promise.resolve({ rows: ordenado });
     }
 
     // --- Cualquier otra query (tablas legacy: pausados, conversaciones, etc.) ---

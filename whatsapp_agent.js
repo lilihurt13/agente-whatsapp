@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
@@ -67,6 +69,215 @@ function agregarMensaje(numero, role, contenido) {
   conversaciones[numero].push({ role: role, content: contenido, ts: Date.now() });
   if (conversaciones[numero].length > 12) conversaciones[numero] = conversaciones[numero].slice(-12);
   guardarConversacion(numero);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 COTIZADOR V2 REPISAS (26 jul) — siembra idempotente de precios_repisas
+// desde data/precios_repisas_v2.csv. Parser propio (fs.readFileSync +
+// split), sin dependencia nueva — verificado que ningún campo del CSV real
+// (incluida `alerta`) trae comas ni comillas internas, así que un split
+// simple por línea/coma es seguro.
+// ═══════════════════════════════════════════════════════════════════════════
+const RUTA_CSV_PRECIOS_REPISAS = path.join(__dirname, 'data', 'precios_repisas_v2.csv');
+const CAMPOS_NUMERICOS_PRECIOS_REPISAS = [
+  'prof_cm', 'largo_cm', 'costo_real_instalado', 'tecnico_instalado', 'comercial_instalado',
+  'costo_real_enviado', 'tecnico_enviado', 'comercial_enviado', 'envio_real_estimado', 'precio_minimo_aprobado'
+];
+
+function parsearCsvPreciosRepisas(contenido) {
+  var lineas = contenido.split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l !== ''; });
+  var columnas = lineas[0].split(',');
+  return lineas.slice(1).map(function(linea) {
+    var valores = linea.split(',');
+    var fila = {};
+    columnas.forEach(function(nombreColumna, i) {
+      fila[nombreColumna] = valores[i] !== undefined ? valores[i] : '';
+    });
+    CAMPOS_NUMERICOS_PRECIOS_REPISAS.forEach(function(campo) { fila[campo] = Number(fila[campo]); });
+    return fila;
+  });
+}
+
+// requiere_aprobacion_descuento = true cuando: la fila trae una alerta
+// explícita, O el comercial ya está en/por debajo del técnico (margen
+// agotado), O es una "pequeña profunda" sensible (profundidad 25/30cm con
+// largo < 50cm) — criterio exacto acordado con Lili.
+function calcularRequiereAprobacionDescuento(fila) {
+  var tieneAlerta = !!(fila.alerta && String(fila.alerta).trim() !== '');
+  var margenAgotado = fila.comercial_instalado <= fila.tecnico_instalado;
+  var pequenaProfunda = (fila.prof_cm === 25 || fila.prof_cm === 30) && fila.largo_cm < 50;
+  return tieneAlerta || margenAgotado || pequenaProfunda;
+}
+
+async function sembrarPreciosRepisas() {
+  var contenido;
+  try {
+    contenido = fs.readFileSync(RUTA_CSV_PRECIOS_REPISAS, 'utf8');
+  } catch (e) {
+    console.error('⚠️ No se pudo leer ' + RUTA_CSV_PRECIOS_REPISAS + ' — precios_repisas no se sembró:', e.message);
+    return;
+  }
+
+  var filas = parsearCsvPreciosRepisas(contenido);
+  for (var i = 0; i < filas.length; i++) {
+    var fila = filas[i];
+    var requiereAprobacion = calcularRequiereAprobacionDescuento(fila);
+    try {
+      await pool.query(
+        'INSERT INTO precios_repisas (prof_cm, largo_cm, costo_real_instalado, tecnico_instalado, comercial_instalado, ' +
+        'costo_real_enviado, tecnico_enviado, comercial_enviado, envio_real_estimado, precio_minimo_aprobado, alerta, requiere_aprobacion_descuento) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ' +
+        'ON CONFLICT (prof_cm, largo_cm) DO UPDATE SET ' +
+        'costo_real_instalado = $3, tecnico_instalado = $4, comercial_instalado = $5, ' +
+        'costo_real_enviado = $6, tecnico_enviado = $7, comercial_enviado = $8, ' +
+        'envio_real_estimado = $9, precio_minimo_aprobado = $10, alerta = $11, requiere_aprobacion_descuento = $12',
+        [
+          fila.prof_cm, fila.largo_cm, fila.costo_real_instalado, fila.tecnico_instalado, fila.comercial_instalado,
+          fila.costo_real_enviado, fila.tecnico_enviado, fila.comercial_enviado, fila.envio_real_estimado,
+          fila.precio_minimo_aprobado, fila.alerta || '', requiereAprobacion
+        ]
+      );
+    } catch (e) {
+      console.error('Error sembrando precios_repisas (' + fila.prof_cm + 'x' + fila.largo_cm + '):', e.message);
+    }
+  }
+  console.log('💲 precios_repisas sembrado: ' + filas.length + ' filas desde el CSV');
+  await cargarPreciosRepisasEnMemoria();
+}
+
+var preciosRepisas = []; // cargado al arrancar desde precios_repisas, usado por getSystemPrompt() y resolverPrecioRepisa()
+
+async function cargarPreciosRepisasEnMemoria() {
+  try {
+    var r = await pool.query('SELECT * FROM precios_repisas ORDER BY prof_cm, largo_cm');
+    preciosRepisas = r.rows;
+    console.log('💲 precios_repisas cargado en memoria: ' + preciosRepisas.length + ' filas');
+  } catch (e) {
+    console.error('Error cargando precios_repisas en memoria:', e.message);
+  }
+}
+
+// Arma el catálogo v2 (solo comercial_instalado, Modo 1 por defecto) agrupado
+// por profundidad, para getSystemPrompt(). Reemplaza el catálogo v1 de
+// repisas (ver integración pendiente — no se ha tocado getSystemPrompt() todavía).
+function construirCatalogoRepisasV2() {
+  if (preciosRepisas.length === 0) return '(catálogo de repisas no disponible — escalar cualquier cotización)';
+
+  var porProfundidad = {};
+  preciosRepisas.forEach(function(fila) {
+    if (!porProfundidad[fila.prof_cm]) porProfundidad[fila.prof_cm] = [];
+    porProfundidad[fila.prof_cm].push(fila);
+  });
+
+  var profundidades = Object.keys(porProfundidad).map(Number).sort(function(a, b) { return a - b; });
+  return profundidades.map(function(prof) {
+    var filas = porProfundidad[prof].slice().sort(function(a, b) { return a.largo_cm - b.largo_cm; });
+    var lineas = filas.map(function(f) {
+      return '  ' + f.largo_cm + 'cm → $' + f.comercial_instalado.toLocaleString('es-CO');
+    });
+    return 'Profundidad ' + prof + 'cm:\n' + lineas.join('\n');
+  }).join('\n\n');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 COTIZADOR V2 REPISAS (26 jul) — resolución determinística de precio en
+// JS puro. Claude NUNCA calcula ni interpola aritmética (esa regla se
+// mantiene sin cambios) — recibe el precio ya resuelto por esta función.
+// Pura y testeable: no toca la BD ni módulo, recibe el catálogo como
+// parámetro. Ver test/cotizador-v2.test.js para los casos cubiertos.
+//
+// Reglas acordadas con Lili:
+// - Modalidad "recoge" (Modo 3): siempre requiere_aprobacion (sin CSV de
+//   desglose de transporte/buffer para calcularlo automáticamente).
+// - Coincidencia exacta (profundidad+largo) → tipoResolucion "exacto".
+// - Sin exacta: interpola linealmente entre la referencia inmediatamente
+//   inferior y superior DE LA MISMA PROFUNDIDAD, redondea a $10.000.
+// - El precio final nunca queda por debajo del valor técnico ni del precio
+//   mínimo aprobado (ambos interpolados igual) — Math.max de los tres.
+// - Sin dos referencias válidas en esa profundidad (fuera de rango, o
+//   profundidad inexistente): tipoResolucion "requiere_aprobacion", nunca
+//   se extrapola.
+// - permiteDescuentoAutomatico solo puede ser true en coincidencia EXACTA
+//   con requiere_aprobacion_descuento = false en esa fila — un precio
+//   interpolado nunca habilita descuento automático (más conservador).
+// ═══════════════════════════════════════════════════════════════════════════
+function resolverPrecioRepisa(params, catalogoRepisas) {
+  params = params || {};
+  var largoCm = params.largoCm;
+  var profundidadCm = params.profundidadCm;
+
+  var resultado = {
+    tipoResolucion: 'requiere_aprobacion',
+    largoSolicitado: largoCm,
+    profundidadSolicitada: profundidadCm,
+    referenciaInferior: null,
+    referenciaSuperior: null,
+    precioBase: null,
+    precioMinimoAprobado: null,
+    valorTecnico: null,
+    precioFinalSugerido: null,
+    permiteDescuentoAutomatico: false,
+    alerta: null
+  };
+
+  if (params.modalidad && params.modalidad !== 'instalado' && params.modalidad !== 'enviado') {
+    resultado.alerta = 'Modalidad "recoge cliente" — siempre requiere aprobación manual de Lili.';
+    return resultado;
+  }
+  var modalidad = params.modalidad === 'enviado' ? 'enviado' : 'instalado';
+
+  if (typeof largoCm !== 'number' || isNaN(largoCm) || typeof profundidadCm !== 'number' || isNaN(profundidadCm) || !Array.isArray(catalogoRepisas)) {
+    resultado.alerta = 'Datos insuficientes para resolver el precio.';
+    return resultado;
+  }
+
+  var campoComercial = modalidad === 'enviado' ? 'comercial_enviado' : 'comercial_instalado';
+  var campoTecnico = modalidad === 'enviado' ? 'tecnico_enviado' : 'tecnico_instalado';
+
+  var filasProfundidad = catalogoRepisas.filter(function(f) { return f.prof_cm === profundidadCm; });
+
+  var exacta = filasProfundidad.find(function(f) { return f.largo_cm === largoCm; });
+  if (exacta) {
+    resultado.tipoResolucion = 'exacto';
+    resultado.referenciaInferior = exacta;
+    resultado.referenciaSuperior = exacta;
+    resultado.precioBase = exacta[campoComercial];
+    resultado.precioMinimoAprobado = exacta.precio_minimo_aprobado;
+    resultado.valorTecnico = exacta[campoTecnico];
+    resultado.precioFinalSugerido = exacta[campoComercial];
+    resultado.permiteDescuentoAutomatico = !exacta.requiere_aprobacion_descuento;
+    resultado.alerta = exacta.alerta || null;
+    return resultado;
+  }
+
+  var inferiores = filasProfundidad.filter(function(f) { return f.largo_cm < largoCm; }).sort(function(a, b) { return b.largo_cm - a.largo_cm; });
+  var superiores = filasProfundidad.filter(function(f) { return f.largo_cm > largoCm; }).sort(function(a, b) { return a.largo_cm - b.largo_cm; });
+
+  if (inferiores.length === 0 || superiores.length === 0) {
+    resultado.alerta = 'Sin dos referencias de precio dentro de esta profundidad — requiere aprobación manual.';
+    return resultado;
+  }
+
+  var inf = inferiores[0];
+  var sup = superiores[0];
+  var fraccion = (largoCm - inf.largo_cm) / (sup.largo_cm - inf.largo_cm);
+
+  var precioInterpolado = inf[campoComercial] + fraccion * (sup[campoComercial] - inf[campoComercial]);
+  var precioRedondeado = Math.round(precioInterpolado / 10000) * 10000;
+  var tecnicoInterpolado = inf[campoTecnico] + fraccion * (sup[campoTecnico] - inf[campoTecnico]);
+  var minimoInterpolado = inf.precio_minimo_aprobado + fraccion * (sup.precio_minimo_aprobado - inf.precio_minimo_aprobado);
+
+  resultado.tipoResolucion = 'interpolado';
+  resultado.referenciaInferior = inf;
+  resultado.referenciaSuperior = sup;
+  resultado.precioBase = precioRedondeado;
+  resultado.precioMinimoAprobado = minimoInterpolado;
+  resultado.valorTecnico = tecnicoInterpolado;
+  resultado.precioFinalSugerido = Math.max(precioRedondeado, tecnicoInterpolado, minimoInterpolado);
+  resultado.permiteDescuentoAutomatico = false;
+  resultado.alerta = (inf.alerta || sup.alerta) ? 'Precio interpolado entre referencias con alerta — validar con Lili si se ofrece descuento.' : null;
+
+  return resultado;
 }
 
 async function crearIndices() {
@@ -209,6 +420,33 @@ async function inicializarBD() {
       'updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
       ')'
     );
+
+    // ═══════════════════════════════════════════════════════════════════
+    // 🆕 COTIZADOR V2 REPISAS (26 jul) — reemplaza la tabla de precios de
+    // repisas que vivía como texto fijo dentro de getSystemPrompt(). Datos
+    // reales de costos/técnico/comercial por profundidad+largo, sembrados
+    // desde data/precios_repisas_v2.csv. Ver sembrarPreciosRepisas() más
+    // abajo (fuera de inicializarBD, se llama después de crear la tabla).
+    // ═══════════════════════════════════════════════════════════════════
+    await pool.query(
+      'CREATE TABLE IF NOT EXISTS precios_repisas (' +
+      'id SERIAL PRIMARY KEY, ' +
+      'prof_cm INTEGER NOT NULL, ' +
+      'largo_cm INTEGER NOT NULL, ' +
+      'costo_real_instalado INTEGER NOT NULL, ' +
+      'tecnico_instalado INTEGER NOT NULL, ' +
+      'comercial_instalado INTEGER NOT NULL, ' +
+      'costo_real_enviado INTEGER NOT NULL, ' +
+      'tecnico_enviado INTEGER NOT NULL, ' +
+      'comercial_enviado INTEGER NOT NULL, ' +
+      'envio_real_estimado INTEGER NOT NULL, ' +
+      'precio_minimo_aprobado INTEGER NOT NULL, ' +
+      "alerta TEXT NOT NULL DEFAULT '', " +
+      'requiere_aprobacion_descuento BOOLEAN NOT NULL DEFAULT false, ' +
+      'UNIQUE(prof_cm, largo_cm)' +
+      ')'
+    );
+    await sembrarPreciosRepisas();
 
     await crearIndices();
 
@@ -2987,6 +3225,12 @@ app.detectarProductoPorTexto = detectarProductoPorTexto;
 app.detectarProductoDesdeReferral = detectarProductoDesdeReferral;
 app.formatearContextoReferral = formatearContextoReferral;
 app.construirReferralParaContexto = construirReferralParaContexto;
+app.resolverPrecioRepisa = resolverPrecioRepisa;
+app.parsearCsvPreciosRepisas = parsearCsvPreciosRepisas;
+app.calcularRequiereAprobacionDescuento = calcularRequiereAprobacionDescuento;
+app.construirCatalogoRepisasV2 = construirCatalogoRepisasV2;
+app.sembrarPreciosRepisas = sembrarPreciosRepisas;
+app.__setPreciosRepisasParaPruebas = function(filas) { preciosRepisas = filas; };
 app.procesarMensaje = procesarMensaje;
 // Solo para pruebas: permite inyectar un pool simulado. Nunca se llama en
 // producción (Railway arranca con `node whatsapp_agent.js`, no hace `require`
