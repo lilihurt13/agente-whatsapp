@@ -2359,6 +2359,28 @@ function formatearContextoReferral(referralData, producto) {
   return encabezado + '\n' + partes.join('\n');
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 🐛 FIX (26 jul) — condición de carrera confirmada con el lead real
+// 573138910346 (id=11): capturarReferral() escribe referral_data a la BD
+// de forma async/fire-and-forget y NUNCA muta el objeto `lead` en memoria.
+// Cuando el referral llega en el MISMO mensaje que crea el lead (el caso
+// típico de Click-to-WhatsApp), `resultadoCRM.lead.referral_data` en el
+// webhook todavía está vacío en ese instante — la escritura a la BD y la
+// lectura para armar el contexto de Claude corren en paralelo, y la
+// lectura gana la carrera.
+//
+// Fix: usar `message.referral` del mensaje ACTUAL como fuente principal
+// (disponible sincrónicamente, sin depender de la BD) con
+// `referralGuardado` (de la BD) como respaldo para mensajes posteriores
+// que ya no traen su propio referral. El actual tiene prioridad porque es
+// el más fresco.
+// ═══════════════════════════════════════════════════════════════════════════
+function construirReferralParaContexto(referralGuardado, messageReferral) {
+  var actual = messageReferral ? extraerCamposReferralPresentes(messageReferral) : {};
+  var guardado = referralGuardado || {};
+  return Object.assign({}, guardado, actual);
+}
+
 app.get('/webhook', function(req, res) {
   var mode = req.query['hub.mode'];
   var token = req.query['hub.verify_token'];
@@ -2493,11 +2515,14 @@ app.post('/webhook', function(req, res) {
           procesando[from] = true;
           // 🆕 FASE 1B: se pasa el leadId (si lo tenemos) para que procesarMensaje
           // pueda buscar un formulario de Lead Ads vinculado reciente.
-          // 🆕 AJUSTE 1: se pasa también referral_data (ya lo tenemos en memoria
-          // desde resultadoCRM.lead — sin consulta adicional a la BD) para el
-          // caso de leads sin formulario pero con anuncio de origen identificable.
+          // 🆕 AJUSTE 1 + 🐛 FIX (26 jul): se pasa referral_data combinando lo
+          // guardado en la BD con el referral de ESTE mismo mensaje (más fresco
+          // — evita la condición de carrera con la escritura async de
+          // capturarReferral(), ver construirReferralParaContexto()).
           var leadIdParaFormulario = resultadoCRM.lead ? resultadoCRM.lead.id : null;
-          var referralDataParaContexto = resultadoCRM.lead ? resultadoCRM.lead.referral_data : null;
+          var referralDataParaContexto = resultadoCRM.lead
+            ? construirReferralParaContexto(resultadoCRM.lead.referral_data, message.referral)
+            : null;
           setTimeout(function() { procesarMensaje(from, texto, leadIdParaFormulario, referralDataParaContexto); }, 500);
         });
       }
@@ -2961,6 +2986,7 @@ app.detectarProductoFormulario = detectarProductoFormulario;
 app.detectarProductoPorTexto = detectarProductoPorTexto;
 app.detectarProductoDesdeReferral = detectarProductoDesdeReferral;
 app.formatearContextoReferral = formatearContextoReferral;
+app.construirReferralParaContexto = construirReferralParaContexto;
 app.procesarMensaje = procesarMensaje;
 // Solo para pruebas: permite inyectar un pool simulado. Nunca se llama en
 // producción (Railway arranca con `node whatsapp_agent.js`, no hace `require`
