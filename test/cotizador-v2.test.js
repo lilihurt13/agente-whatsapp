@@ -82,13 +82,11 @@ test('resolverPrecioRepisa — coincidencia exacta (20x60, permite descuento)', 
   assert.equal(r.permiteDescuentoAutomatico, true);
 });
 
-test('resolverPrecioRepisa — medida intermedia real (20x63, entre 60→280.000 y 65→300.000)', function() {
+test('resolverPrecioRepisa — 🆕 FASE 6: medida sin fila exacta (20x63) ya NO interpola, calcula por fórmula', function() {
   const r = app.resolverPrecioRepisa({ largoCm: 63, profundidadCm: 20, modalidad: 'instalado' }, CATALOGO_SEMBRADO);
-  assert.equal(r.tipoResolucion, 'interpolado');
-  // (63-60)/(65-60) = 0.6 → 280000 + 0.6*20000 = 292000 → redondeado a 290000
-  assert.equal(r.precioBase, 290000);
-  assert.equal(r.precioFinalSugerido, 290000);
-  assert.equal(r.permiteDescuentoAutomatico, false, 'un precio interpolado nunca habilita descuento automático');
+  assert.equal(r.tipoResolucion, 'formula');
+  assert.equal(r.precioFinalSugerido, 260000);
+  assert.equal(r.permiteDescuentoAutomatico, false, 'un precio calculado por fórmula nunca habilita descuento automático');
 });
 
 test('resolverPrecioRepisa — coincidencia exacta con requiere_aprobacion_descuento=true rechaza el descuento (25x30)', function() {
@@ -103,15 +101,10 @@ test('resolverPrecioRepisa — modo envío nacional usa comercial_enviado direct
   assert.equal(r.precioFinalSugerido, 250000, 'debe ser exactamente comercial_enviado, sin descontar transporte/buffer');
 });
 
-test('resolverPrecioRepisa — piso real: el interpolado no puede quedar por debajo del mínimo aprobado (10x26)', function() {
-  // Caso real encontrado en el CSV: 10x25→170.000 y 10x30→180.000. El
-  // redondeo de la interpolación (170.000) queda por debajo del
-  // precio_minimo_aprobado interpolado (172.000) — debe usarse el piso.
+test('resolverPrecioRepisa — 🆕 FASE 6: medida sin fila exacta (10x26) calcula por fórmula, no aplica piso de mínimo aprobado (ya no existe ese concepto en fórmula)', function() {
   const r = app.resolverPrecioRepisa({ largoCm: 26, profundidadCm: 10, modalidad: 'instalado' }, CATALOGO_SEMBRADO);
-  assert.equal(r.tipoResolucion, 'interpolado');
-  assert.equal(r.precioBase, 170000, 'el precio interpolado y redondeado, antes de aplicar el piso');
-  assert.ok(r.precioFinalSugerido > r.precioBase, 'el piso debe elevar el precio final por encima del redondeo bruto');
-  assert.equal(r.precioFinalSugerido, r.precioMinimoAprobado, 'en este caso el piso lo determina el mínimo aprobado, no el técnico');
+  assert.equal(r.tipoResolucion, 'formula');
+  assert.equal(r.precioFinalSugerido, 170000);
 });
 
 test('resolverPrecioRepisa — sin dos referencias en esa profundidad: requiere aprobación, nunca extrapola', function() {

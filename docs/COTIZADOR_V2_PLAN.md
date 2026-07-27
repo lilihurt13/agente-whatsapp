@@ -76,3 +76,52 @@ menciona el tag del cotizador`).
 5. Si algo sale mal: volver a poner `COTIZADOR_REPISAS_V2_ENABLED=false`
    (o borrar la variable) en Railway y redeployar — vuelve al
    comportamiento de hoy sin necesitar un revert de código.
+
+## 🆕 Fase 6 (27 jul) — fórmula segura reemplaza la interpolación. Sigue sin activar en producción.
+
+**Cambio de comportamiento, aprobado explícitamente por Lili:**
+
+- **Antes:** una medida sin coincidencia exacta en las 66 filas del CSV se
+  resolvía interpolando linealmente entre la referencia inferior y
+  superior de la misma profundidad.
+- **Ahora:** ya no se interpola. Se calcula un precio real desde los
+  parámetros base (área, material, barniz, mano de obra, soportes,
+  fijos — ver `calcularPrecioRepisaDesdeFormula()`), pero SOLO cuando el
+  caso cae dentro de límites seguros (ver más abajo). Fuera de esos
+  límites, `requiere_aprobacion` — nunca se extrapola ni se interpola.
+- **Por eso algunos precios pueden cambiar** frente a lo que hubiera dado
+  la interpolación anterior. Caso detectado durante las pruebas: 20×63
+  antes daba $290.000 interpolado, ahora da $260.000 calculado por
+  fórmula. Este cambio es esperado — decisión explícita de Lili de
+  eliminar la interpolación automática, no un bug.
+
+**Condiciones para usar la fórmula (TODAS deben cumplirse; ver
+`elegibleParaFormulaRepisa()`):**
+- Repisa estándar/sandwichada de 3,6cm (no entamborada, no "tipo caja" —
+  filtrado por instrucción en `bloqueCotizadorV2` del prompt, Claude
+  nunca emite el tag en esos casos; no es un parámetro de la función).
+- Profundidad exactamente 10, 15, 20 o 25 o 30cm (sin profundidades
+  intermedias como 18/22/28, sin interpolar entre profundidades).
+- Largo entre 20cm y 200cm.
+- Modalidad `instalado` (Medellín). `enviado` (envío nacional) sin fila
+  exacta NUNCA calcula por fórmula — no se inventa el costo de envío
+  todavía; queda `requiere_aprobacion`. `recogida` siempre escala, sin
+  cambios.
+- Profundidad mayor a 30cm: no usa soportes invisibles, requiere
+  instalación con listones (pared de fondo + pared lateral) — escala con
+  un mensaje específico al cliente (`resultado.mensajeParaCliente`), no
+  el genérico de `escalarCotizacionSinPrecio()`.
+
+**Los parámetros de la fórmula (umbrales de tamaño pequeña/mediana/grande,
+costos de barniz/mano de obra/soportes, redondeo `Math.ceil` a la decena
+de mil) fueron confirmados explícitamente por Lili — nunca deducidos del
+CSV**, porque muchas de las 66 filas tienen ajustes manuales (columna
+`alerta`) que no reflejan la fórmula pura. Los 3 casos base (110×25,
+175×20, 95×30) se calcularon a mano y Lili los verificó antes de escribir
+el código. Ver `test/cotizador-v2-fase6.test.js` para la batería completa
+(21 pruebas: clasificación de tamaño, los 3 casos base, límites de rango,
+profundidad>30, envío nacional, recogida, prioridad de la fila exacta, y
+el redondeo `Math.ceil` vs `Math.round`).
+
+**`COTIZADOR_REPISAS_V2_ENABLED` sigue apagado — esta fase no se activó
+en Railway, decisión pendiente de Lili, igual que las fases anteriores.**

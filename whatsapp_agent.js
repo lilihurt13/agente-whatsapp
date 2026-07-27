@@ -192,6 +192,95 @@ function construirCatalogoRepisasV2() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 6 — COTIZADOR V2 REPISAS (27 jul) — cálculo real por fórmula,
+// desde los parámetros base del Excel "Parametros" v1/v2 (aprobado por
+// Lili con 3 ejemplos verificados a mano: 110×25=$380.000,
+// 175×20=$460.000, 95×30=$420.000). Reemplaza la interpolación lineal
+// anterior para cualquier combinación de largo×profundidad que NO esté
+// en las 66 filas exactas del CSV, dentro de límites seguros — ver
+// elegibleParaFormulaRepisa() más abajo para las condiciones exactas.
+//
+// Pura y aislada de resolverPrecioRepisa() a propósito, para poder
+// probarla sola (ver test/cotizador-v2.test.js). NUNCA deduce sus
+// parámetros (umbrales de tamaño, costos de barniz/mano de obra/soportes)
+// del CSV — el CSV tiene ajustes manuales fila por fila (columna
+// `alerta`) que no reflejan la fórmula pura; los valores de abajo son los
+// que Lili confirmó explícitamente, no una inferencia.
+// ═══════════════════════════════════════════════════════════════════════════
+var COSTO_MATERIAL_POR_CM2_REPISA = 600000 / (244 * 122); // hoja de roble 244×122cm a $600.000
+var FIJOS_INSTALADO_MEDELLIN_REPISA = 30000 + 30000 + 8000; // instalación + transporte/buffer + consumibles
+
+var BARNIZ_POR_TAMANO_REPISA = { pequena: 5000, mediana: 10000, grande: 15000 };
+var MANO_OBRA_POR_TAMANO_REPISA = { pequena: 15000, mediana: 20000, grande: 35000 };
+
+// Regla de prioridad confirmada por Lili: si largo>120 O profundidad>25,
+// es "grande/profunda" aunque la otra dimensión sea menor. Si no, es
+// "pequeña" solo cuando AMBAS dimensiones son chicas; el resto es
+// "mediana" (rango por defecto).
+function clasificarTamanoRepisa(largoCm, profundidadCm) {
+  if (largoCm > 120 || profundidadCm > 25) return 'grande';
+  if (largoCm <= 50 && profundidadCm <= 15) return 'pequena';
+  return 'mediana';
+}
+
+function cantidadSoportesRepisa(largoCm) {
+  if (largoCm <= 80) return 2;
+  if (largoCm <= 140) return 3;
+  return 4; // 150-200cm — fuera de este rango ya no es elegible para fórmula
+}
+
+// 3 categorías de soporte confirmadas por Lili (reemplaza la regla
+// anterior de solo 2 categorías): 10cm→soporte 12cm, 15cm y 20cm
+// COMPARTEN el soporte 18cm, 25cm y 30cm comparten el soporte 25cm.
+function costoUnitarioSoporteRepisa(profundidadCm) {
+  if (profundidadCm === 10) return 5000;
+  if (profundidadCm === 15 || profundidadCm === 20) return 7000;
+  return 10000; // 25 o 30
+}
+
+function calcularPrecioRepisaDesdeFormula(largoCm, profundidadCm) {
+  var areaCm2 = (largoCm + 1) * (profundidadCm + 1) * 2;
+  var costoMaterial = areaCm2 * COSTO_MATERIAL_POR_CM2_REPISA;
+  var tamano = clasificarTamanoRepisa(largoCm, profundidadCm);
+  var barniz = BARNIZ_POR_TAMANO_REPISA[tamano];
+  var manoObra = MANO_OBRA_POR_TAMANO_REPISA[tamano];
+  var soportes = cantidadSoportesRepisa(largoCm) * costoUnitarioSoporteRepisa(profundidadCm);
+  var costoReal = costoMaterial + barniz + manoObra + soportes + FIJOS_INSTALADO_MEDELLIN_REPISA;
+  var valorTecnico = costoReal / 0.65;
+  // Redondeo hacia arriba MATEMÁTICO explícito (Math.ceil), nunca
+  // Math.round — protege el margen siempre, decisión explícita de Lili.
+  var precioComercial = Math.ceil(valorTecnico / 10000) * 10000;
+
+  return {
+    largoCm: largoCm,
+    profundidadCm: profundidadCm,
+    areaCm2: areaCm2,
+    costoMaterial: costoMaterial,
+    tamano: tamano,
+    barniz: barniz,
+    manoObra: manoObra,
+    soportes: soportes,
+    fijos: FIJOS_INSTALADO_MEDELLIN_REPISA,
+    costoReal: costoReal,
+    valorTecnico: valorTecnico,
+    precioComercial: precioComercial
+  };
+}
+
+// Condiciones seguras para usar la fórmula en vez de escalar — TODAS
+// deben cumplirse. Fuera de esto, resolverPrecioRepisa() siempre escala
+// (ver el bloque de guardas más abajo para los mensajes específicos).
+var PROFUNDIDADES_ELEGIBLES_FORMULA_REPISA = [10, 15, 20, 25, 30];
+var LARGO_MIN_FORMULA_REPISA = 20;
+var LARGO_MAX_FORMULA_REPISA = 200;
+
+function elegibleParaFormulaRepisa(largoCm, profundidadCm, modalidad) {
+  return modalidad === 'instalado' &&
+    PROFUNDIDADES_ELEGIBLES_FORMULA_REPISA.indexOf(profundidadCm) !== -1 &&
+    largoCm >= LARGO_MIN_FORMULA_REPISA && largoCm <= LARGO_MAX_FORMULA_REPISA;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 🆕 COTIZADOR V2 REPISAS (26 jul) — resolución determinística de precio en
 // JS puro. Claude NUNCA calcula ni interpola aritmética (esa regla se
 // mantiene sin cambios) — recibe el precio ya resuelto por esta función.
@@ -201,17 +290,17 @@ function construirCatalogoRepisasV2() {
 // Reglas acordadas con Lili:
 // - Modalidad "recoge" (Modo 3): siempre requiere_aprobacion (sin CSV de
 //   desglose de transporte/buffer para calcularlo automáticamente).
-// - Coincidencia exacta (profundidad+largo) → tipoResolucion "exacto".
-// - Sin exacta: interpola linealmente entre la referencia inmediatamente
-//   inferior y superior DE LA MISMA PROFUNDIDAD, redondea a $10.000.
-// - El precio final nunca queda por debajo del valor técnico ni del precio
-//   mínimo aprobado (ambos interpolados igual) — Math.max de los tres.
-// - Sin dos referencias válidas en esa profundidad (fuera de rango, o
-//   profundidad inexistente): tipoResolucion "requiere_aprobacion", nunca
-//   se extrapola.
+// - Coincidencia exacta (profundidad+largo) → tipoResolucion "exacto",
+//   tiene PRIORIDAD sobre la fórmula (fila validada manualmente).
+// - 🆕 FASE 6 (27 jul) — sin exacta: YA NO interpola. Calcula por fórmula
+//   real (calcularPrecioRepisaDesdeFormula) si la combinación cae dentro
+//   de límites seguros (ver elegibleParaFormulaRepisa) — si no, escala.
+//   Decisión explícita de Lili: nada de "adivinar" entre dos referencias
+//   vecinas — o hay dato exacto, o se calcula real, o se escala.
 // - permiteDescuentoAutomatico solo puede ser true en coincidencia EXACTA
 //   con requiere_aprobacion_descuento = false en esa fila — un precio
-//   interpolado nunca habilita descuento automático (más conservador).
+//   calculado por fórmula nunca habilita descuento automático (más
+//   conservador, igual que la interpolación antes).
 // ═══════════════════════════════════════════════════════════════════════════
 function resolverPrecioRepisa(params, catalogoRepisas) {
   params = params || {};
@@ -229,7 +318,14 @@ function resolverPrecioRepisa(params, catalogoRepisas) {
     valorTecnico: null,
     precioFinalSugerido: null,
     permiteDescuentoAutomatico: false,
-    alerta: null
+    alerta: null,
+    // 🆕 FASE 6 — solo se llena cuando hay un mensaje específico para el
+    // cliente distinto al genérico de escalarCotizacionSinPrecio (hoy:
+    // únicamente profundidad>30cm, ver más abajo).
+    mensajeParaCliente: null,
+    // 🆕 FASE 6 — desglose completo cuando tipoResolucion === 'formula',
+    // para poder auditar/loguear cada componente del cálculo.
+    desgloseFormula: null
   };
 
   if (params.modalidad && params.modalidad !== 'instalado' && params.modalidad !== 'enviado') {
@@ -262,33 +358,33 @@ function resolverPrecioRepisa(params, catalogoRepisas) {
     return resultado;
   }
 
-  var inferiores = filasProfundidad.filter(function(f) { return f.largo_cm < largoCm; }).sort(function(a, b) { return b.largo_cm - a.largo_cm; });
-  var superiores = filasProfundidad.filter(function(f) { return f.largo_cm > largoCm; }).sort(function(a, b) { return a.largo_cm - b.largo_cm; });
-
-  if (inferiores.length === 0 || superiores.length === 0) {
-    resultado.alerta = 'Sin dos referencias de precio dentro de esta profundidad — requiere aprobación manual.';
+  // 🆕 FASE 6 (27 jul) — sin fila exacta, YA NO se interpola. Guarda
+  // específica primero: profundidad>30cm no es solo "fuera de rango", es
+  // un cambio real de sistema de instalación (soportes invisibles dejan
+  // de servir, se necesitan listones con pared de fondo + pared lateral)
+  // — el cliente necesita un mensaje distinto al genérico, no solo "es
+  // más personalizada". Se evalúa independiente de la modalidad: es una
+  // restricción del producto, no de quién instala.
+  if (profundidadCm > 30) {
+    resultado.alerta = 'Profundidad mayor a 30cm — ya no aplican soportes invisibles, requiere evaluar instalación con listones (necesita pared de fondo + pared lateral disponible). Validar con Lili.';
+    resultado.mensajeParaCliente = 'Para esa profundidad ya no usamos soportes invisibles, sino instalación con listones — necesito confirmar con Lili el tipo de pared antes de darte el valor exacto 😊';
     return resultado;
   }
 
-  var inf = inferiores[0];
-  var sup = superiores[0];
-  var fraccion = (largoCm - inf.largo_cm) / (sup.largo_cm - inf.largo_cm);
+  if (elegibleParaFormulaRepisa(largoCm, profundidadCm, modalidad)) {
+    var calculo = calcularPrecioRepisaDesdeFormula(largoCm, profundidadCm);
+    resultado.tipoResolucion = 'formula';
+    resultado.precioBase = calculo.precioComercial;
+    resultado.valorTecnico = calculo.valorTecnico;
+    resultado.precioFinalSugerido = calculo.precioComercial;
+    resultado.permiteDescuentoAutomatico = false;
+    resultado.desgloseFormula = calculo;
+    resultado.alerta = null;
+    return resultado;
+  }
 
-  var precioInterpolado = inf[campoComercial] + fraccion * (sup[campoComercial] - inf[campoComercial]);
-  var precioRedondeado = Math.round(precioInterpolado / 10000) * 10000;
-  var tecnicoInterpolado = inf[campoTecnico] + fraccion * (sup[campoTecnico] - inf[campoTecnico]);
-  var minimoInterpolado = inf.precio_minimo_aprobado + fraccion * (sup.precio_minimo_aprobado - inf.precio_minimo_aprobado);
-
-  resultado.tipoResolucion = 'interpolado';
-  resultado.referenciaInferior = inf;
-  resultado.referenciaSuperior = sup;
-  resultado.precioBase = precioRedondeado;
-  resultado.precioMinimoAprobado = minimoInterpolado;
-  resultado.valorTecnico = tecnicoInterpolado;
-  resultado.precioFinalSugerido = Math.max(precioRedondeado, tecnicoInterpolado, minimoInterpolado);
-  resultado.permiteDescuentoAutomatico = false;
-  resultado.alerta = (inf.alerta || sup.alerta) ? 'Precio interpolado entre referencias con alerta — validar con Lili si se ofrece descuento.' : null;
-
+  resultado.alerta = 'Sin fila exacta y fuera de las condiciones seguras para calcular por fórmula (profundidad no modelada, largo fuera de ' +
+    LARGO_MIN_FORMULA_REPISA + '-' + LARGO_MAX_FORMULA_REPISA + 'cm, o modalidad distinta a instalado) — requiere aprobación manual.';
   return resultado;
 }
 
@@ -951,6 +1047,10 @@ Sigue el flujo de siempre: da el precio de la opción estándar de 15cm directo,
 
 CASO QUE ACTIVA ESTE BLOQUE — el cliente pide explícitamente una profundidad distinta a 15cm (20, 25 o 30cm), ya sea porque lo dijo desde el principio o porque eligió una de las que ofreciste:
 Aquí SÍ tienes PROHIBIDO calcular, interpolar, estimar o redondear el precio por tu cuenta — ni siquiera usando la tabla de 15cm del catálogo de arriba (esa tabla no aplica a otras profundidades). El precio de una profundidad distinta a 15cm SIEMPRE lo calcula el sistema, nunca tú.
+
+NUNCA emitas el tag en estos casos — en vez de eso, sigue conversando con naturalidad y escala con [ESCALAR] si hace falta:
+- El cliente pide un espesor distinto a 3.6cm o 3cm — por ejemplo 4.5cm, 5cm, 5.4cm, o dice "entamborada", "tipo caja" o "más gruesa". Es una técnica de fabricación distinta (repisa entamborada), que este cálculo no cubre. Responde con calidez que puedes confirmarlo con Lili, sin dar precio.
+- El cliente pide una profundidad mayor a 30cm. A partir de ahí ya no se usan soportes invisibles — se necesita evaluar instalación con listones, y eso depende de si hay pared de fondo y una pared lateral disponible. No asumas que sí la hay: dile que necesitas confirmar con Lili el tipo de instalación antes de dar el valor exacto.
 
 Cuando el cliente quiera cotizar una repisa con profundidad distinta a 15cm Y ya tengas estos 4 datos confirmados en la conversación — largo (cm), profundidad (cm), ciudad, y cantidad — Y la cantidad sea exactamente 1, responde ÚNICAMENTE con este tag interno, sin ningún otro texto antes o después, en este formato EXACTO:
 [COTIZAR_REPISA:largo=<numero>,prof=<numero>,cantidad=1,ciudad=<ciudad>,modalidad=<modalidad>]
@@ -2988,11 +3088,15 @@ let llamarClaude = function(systemPrompt, mensajes) {
 // ═══════════════════════════════════════════════════════════════════════════
 // 🆕 FASE 5 (26 jul) — ruta única de escalamiento seguro para cualquier
 // falla del flujo de cotización de repisa (cantidad>1, requiere_aprobacion,
-// o cualquier error inesperado). El cliente SIEMPRE recibe este mensaje
-// fijo — nunca silencio, nunca el tag crudo.
+// o cualquier error inesperado). El cliente SIEMPRE recibe un mensaje —
+// nunca silencio, nunca el tag crudo.
+//
+// 🆕 FASE 6 (27 jul) — acepta un mensajeCliente opcional para casos que
+// necesitan una explicación específica en vez del genérico "es más
+// personalizada" (hoy: profundidad>30cm, ver resolverPrecioRepisa()).
 // ═══════════════════════════════════════════════════════════════════════════
-function escalarCotizacionSinPrecio(from, razonInterna) {
-  var mensaje = 'Esa medida es más personalizada. Déjame confirmarla con Lili para darte el valor exacto 😊';
+function escalarCotizacionSinPrecio(from, razonInterna, mensajeCliente) {
+  var mensaje = mensajeCliente || 'Esa medida es más personalizada. Déjame confirmarla con Lili para darte el valor exacto 😊';
   agregarMensaje(from, 'assistant', mensaje);
   enviarMensaje(from, mensaje);
   notificarLili(from, 'Cotización de repisa requiere aprobación manual: ' + razonInterna);
@@ -3034,7 +3138,11 @@ async function manejarCotizacionRepisa(from, texto, tag, systemConContexto, mens
     );
 
     if (resultado.tipoResolucion === 'requiere_aprobacion') {
-      escalarCotizacionSinPrecio(from, 'resolverPrecioRepisa devolvió requiere_aprobacion (' + (resultado.alerta || 'sin alerta específica') + ')');
+      escalarCotizacionSinPrecio(
+        from,
+        'resolverPrecioRepisa devolvió requiere_aprobacion (' + (resultado.alerta || 'sin alerta específica') + ')',
+        resultado.mensajeParaCliente || null
+      );
       return;
     }
 
@@ -3605,6 +3713,9 @@ app.detectarProductoDesdeReferral = detectarProductoDesdeReferral;
 app.formatearContextoReferral = formatearContextoReferral;
 app.construirReferralParaContexto = construirReferralParaContexto;
 app.resolverPrecioRepisa = resolverPrecioRepisa;
+app.calcularPrecioRepisaDesdeFormula = calcularPrecioRepisaDesdeFormula;
+app.clasificarTamanoRepisa = clasificarTamanoRepisa;
+app.elegibleParaFormulaRepisa = elegibleParaFormulaRepisa;
 app.parsearCsvPreciosRepisas = parsearCsvPreciosRepisas;
 app.calcularRequiereAprobacionDescuento = calcularRequiereAprobacionDescuento;
 app.construirCatalogoRepisasV2 = construirCatalogoRepisasV2;
