@@ -2634,19 +2634,22 @@ async function obtenerFormularioVinculadoReciente(leadId) {
   return r.rows.length > 0 ? r.rows[0] : null;
 }
 
-// Mejor esfuerzo para detectar a qué producto pertenece un formulario,
-// buscando palabras clave tanto en los nombres de campo (`name`, que Meta
-// slugifica del texto de la pregunta) como en los VALORES elegidos (que sí
-// suelen venir con el texto completo de la opción, ej. "Compacta
-// 35×45×50cm $390.000" — más confiable que adivinar el slug del nombre).
-// ⚠️ Los nombres exactos de campo no se han visto todavía en un payload
-// real — esto debe confirmarse/ajustarse con el primer lead de prueba
-// (ver docs/PHASE_1B_PLAN.md). Si no logra detectar el producto, no rompe
-// nada: simplemente no incluye el nombre del producto en el encabezado, y
-// Claude sigue teniendo las respuestas crudas como contexto.
+// Mejor esfuerzo para detectar a qué producto pertenece un formulario o
+// anuncio, buscando palabras clave. Las claves deben identificar el
+// producto sin ambigüedad — ver bug real del 27 jul: 'versión', 'compacta',
+// 'clásica' eran palabras de la opción de Mesa Auxiliar pero también
+// podían aparecer en el copy de OTRO anuncio (Escritorio Flotante),
+// causando un falso positivo porque detectarProductoPorTexto() evalúa
+// productos en orden y Mesa Auxiliar va antes que Escritorio en esta
+// lista. Quitadas; solo quedan claves que nombran el producto explícitamente.
+// ⚠️ Los nombres exactos de campo de formulario no se han visto todavía en
+// un payload real (ver docs/PHASE_1B_PLAN.md). Si no logra detectar el
+// producto, no rompe nada: simplemente no incluye el nombre del producto
+// en el encabezado, y Claude sigue teniendo las respuestas/el anuncio
+// crudos como contexto.
 const CLAVES_PRODUCTO_FORMULARIO = [
   { producto: 'Repisa Flotante', claves: ['repisa'] },
-  { producto: 'Mesa Auxiliar', claves: ['mesa auxiliar', 'mesa_auxiliar', 'versión', 'version', 'compacta', 'clásica', 'clasica'] },
+  { producto: 'Mesa Auxiliar', claves: ['mesa auxiliar', 'mesa_auxiliar'] },
   { producto: 'Escritorio Flotante', claves: ['escritorio'] }
 ];
 
@@ -2665,8 +2668,19 @@ function detectarProductoPorTexto(textos) {
   return null;
 }
 
+// 🆕 (27 jul) — dos pasadas: primero solo por `name` (la pregunta, más
+// estable como identificador del formulario) y solo si eso no encuentra
+// nada, cae al comportamiento anterior (`name` + `values` combinados) como
+// respaldo. Evita que un `name` genérico gane por casualidad frente a un
+// `value` que sí nombra el producto explícitamente, sin perder la
+// detección de hoy para formularios cuyo `name` no sea informativo.
 function detectarProductoFormulario(fieldData) {
   if (!Array.isArray(fieldData)) return null;
+
+  var nombres = fieldData.map(function(campo) { return campo.name || ''; });
+  var porNombre = detectarProductoPorTexto(nombres);
+  if (porNombre) return porNombre;
+
   var textos = fieldData.map(function(campo) {
     var valores = Array.isArray(campo.values) ? campo.values.join(' ') : '';
     return (campo.name || '') + ' ' + valores;
