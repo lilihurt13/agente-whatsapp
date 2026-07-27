@@ -3545,6 +3545,7 @@ if (require.main === module) {
     app.listen(PORT, function() {
       console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
       console.log('🔎 Verificación LILI_NUMERO: "' + LILI_NUMERO + '" (longitud: ' + (LILI_NUMERO ? LILI_NUMERO.length : 0) + ' caracteres) — compara esto con tu número real, sin +, sin espacios');
+      console.log('🚩 COTIZADOR_REPISAS_V2_ENABLED = "' + process.env.COTIZADOR_REPISAS_V2_ENABLED + '" (tipo: ' + typeof process.env.COTIZADOR_REPISAS_V2_ENABLED + ', longitud: ' + (process.env.COTIZADOR_REPISAS_V2_ENABLED ? process.env.COTIZADOR_REPISAS_V2_ENABLED.length : 0) + ') — cotizadorRepisasV2Habilitado() = ' + cotizadorRepisasV2Habilitado());
     });
   });
 }
