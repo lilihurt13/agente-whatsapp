@@ -54,3 +54,22 @@ si el descuento aplica sobre `comercial_instalado`/`comercial_enviado` o
 sobre el `precioFinalSugerido` ya resuelto), y solo entonces permitir que
 `cantidad > 1` participe en el cálculo automático del tag
 `[COTIZAR_REPISA:...]`.
+
+## El bloque de reintento de Claude nunca envía fotos
+
+**Encontrado (26 jul 2026, durante el diagnóstico de "fotos por
+producto"):** dentro de `procesarMensaje()`, si la primera llamada a
+Claude falla y se dispara el bloque de reintento, ese camino hace
+`agregarMensaje()`, revisa `necesitaEscalar` y llama a `enviarMensaje()`
+— pero **nunca** llama a `enviarFotosSaludo()` ni a `enviarFotosExtra()`.
+Es decir: si el reintento se activa justo en el primer mensaje de un
+cliente nuevo, o justo cuando pide fotos explícitamente, el cliente se
+queda sin fotos aunque el resto de la respuesta le llegue bien.
+
+**No se toca en esta tarea** (fuera de alcance de "fotos por producto",
+por instrucción explícita de Lili) — solo queda documentado aquí para
+una sesión futura. Cuando se retome: replicar en el bloque de reintento
+la misma lógica de detección de `[FOTOS_EXTRA]`/primer-mensaje y envío
+de fotos que ya tiene el camino principal (usando
+`detectarProductoParaFotos()` una vez esté conectado — ver Fase 3 de
+`feature/fotos-por-producto`).
