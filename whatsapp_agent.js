@@ -3211,8 +3211,17 @@ function procesarMensaje(from, texto, leadId, referralData) {
       }
     }
 
+    if (esPrimerMensaje || necesitaFotosExtra) {
+      // 🆕 FASE 3 (26 jul) — fotos por producto: detecta de qué producto se
+      // está hablando (mensaje del cliente + respuesta de Claude, que suele
+      // nombrar el producto explícitamente) para no enviar siempre las
+      // mismas fotos de repisa. Si no se puede determinar con certeza, cae
+      // al fallback (Repisa Flotante, producto ancla de la campaña).
+      var productoParaFotos = detectarProductoParaFotos([texto, respuesta]) || PRODUCTO_FOTOS_FALLBACK;
+    }
+
     if (esPrimerMensaje) {
-      enviarFotosSaludo(from)
+      enviarFotosSaludo(from, productoParaFotos)
         .then(function() {
           return new Promise(function(resolve) { setTimeout(resolve, 1000); });
         })
@@ -3222,7 +3231,7 @@ function procesarMensaje(from, texto, leadId, referralData) {
         });
     } else if (necesitaFotosExtra) {
       enviarMensaje(from, textoLimpio);
-      setTimeout(function() { enviarFotosExtra(from); }, 1500);
+      setTimeout(function() { enviarFotosExtra(from, productoParaFotos); }, 1500);
       delete procesando[from];
     } else {
       enviarMensaje(from, textoLimpio);
@@ -3278,12 +3287,101 @@ function procesarMensaje(from, texto, leadId, referralData) {
   }); // cierra promesaFormulario.then
 }
 
-const FOTOS = {
-  principal:    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000005ba4722fac900f399e5dc35f_dnlkjv.png',
-  acompanante:  'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781465915/file_00000000f730720eac95c2814d66aa6b_atssh8.png',
-  extra_1:      'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781465915/file_00000000cc80720e95b69a0a306ecad4_jx0bhd.png',
-  extra_2:      'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1781466273/file_000000001f2c722faca1ee2a52bc9acd_cpegru.png'
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FOTOS POR PRODUCTO (26 jul) — corrige el bug reportado por Lili: antes
+// TODAS las fotos que se enviaban (saludo y [FOTOS_EXTRA]) eran siempre de
+// repisa, sin importar el producto del que se estuviera hablando (viejo
+// objeto `FOTOS`, ya eliminado). Este mapa y la función de detección de
+// abajo ya están conectados en `enviarFotosSaludo()`/`enviarFotosExtra()`.
+//
+// URLs reales de Cloudinary provistas por Lili — los 7 productos del
+// catálogo completo, cada uno con sus fotos propias.
+// ═══════════════════════════════════════════════════════════════════════════
+const FOTOS_POR_PRODUCTO = {
+  'Repisa Flotante': [
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1785109762/Repisa_110_cm_ffxcqt.jpg',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1785108271/Repisa_Carrusel_1_Julio_25_u5j01z.png',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1785108113/Repisa_Estudio_1_niaxbp.png'
+  ],
+  'Escritorio Flotante': [
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1785107535/Escritorio_en_Dormitorio_2_ueu0zo.png',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1785107535/Escritorio_en_Dormitorio_3_upif0r.png',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1782881224/Escritorio_en_Habitaci%C3%B3n_8_Close_Up_smdlap.png'
+  ],
+  'Mesa Auxiliar': [
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1782876200/Sofa_2_a4adrt.jpg',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1782876256/Dormitorio_3-2_hjdgpr.jpg'
+  ],
+  'Recibidor': [
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1782883346/Recibidor_Integrado_1_mz068s.png',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1782799076/Recibidor_1-2_aoaaej.png',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1782799073/Recibidor_5-1_d7vs6w.png',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1782880675/Lunes_13-2_ddxk2o.png'
+  ],
+  'Escritorio con Cajones': [
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1782883771/Escritorio_2_saeppg.png',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1782883770/Escritorio_1_ksghk1.png'
+  ],
+  'Cama': [
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1785107886/Cama_1-3_cjeavu.jpg',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1785107922/Cama_3-2_a8rktc.png'
+  ],
+  'Mesa de Centro con Jardinera': [
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1785111138/Mesa_1_fmmna8.png',
+    'https://res.cloudinary.com/dcdn1l8jb/image/upload/v1785111144/Mesa_2_t4umxy.png'
+  ]
 };
+
+// Producto ancla de la campaña — fallback cuando no se puede determinar
+// ningún producto con certeza (conversación ambigua, mezcla de productos).
+const PRODUCTO_FOTOS_FALLBACK = 'Repisa Flotante';
+
+// Detecta el producto para elegir qué fotos enviar. Mismo patrón de
+// palabras clave que ya usa detectarProductoPorTexto() (Fase 1B/Ajuste 1
+// del cotizador) — pero es una función INDEPENDIENTE, con su propia tabla,
+// para no tocar ni arriesgar ese código (regla explícita: no mezclar con
+// la rama del cotizador). Cubre los 7 productos del catálogo completo,
+// más las reglas de desambiguación que acordamos:
+//
+// 1. Frases específicas primero (más confiables): escritorio con
+//    cajones/base/grande/$3.200.000 vs escritorio flotante/para pared/
+//    $1.590.000; mesa de centro/jardinera/para sala vs mesa auxiliar/
+//    pequeña/de noche.
+// 2. Resto de productos sin ambigüedad conocida (repisa, recibidor, cama).
+// 3. Si solo aparece la palabra genérica "escritorio" o "mesa" sin
+//    calificador, usa un default explícito (Escritorio Flotante / Mesa
+//    Auxiliar) — y lo deja logueado siempre, para poder revisar después
+//    si el default está acertando.
+function detectarProductoParaFotos(textos) {
+  var texto = (Array.isArray(textos) ? textos : [textos]).filter(Boolean).join(' ').toLowerCase();
+  if (!texto) return null;
+
+  var clavesEscritorioCajones = ['escritorio con cajones', 'escritorio con base', 'escritorio grande', '3.200.000', '3200000'];
+  var clavesEscritorioFlotante = ['escritorio flotante', 'escritorio para pared', '1.590.000', '1590000'];
+  if (clavesEscritorioCajones.some(function(c) { return texto.indexOf(c) !== -1; })) return 'Escritorio con Cajones';
+  if (clavesEscritorioFlotante.some(function(c) { return texto.indexOf(c) !== -1; })) return 'Escritorio Flotante';
+
+  var clavesMesaCentro = ['mesa de centro', 'mesa jardinera', 'mesa para sala'];
+  var clavesMesaAuxiliar = ['mesa auxiliar', 'mesa pequeña', 'mesa pequena', 'mesa de noche'];
+  if (clavesMesaCentro.some(function(c) { return texto.indexOf(c) !== -1; })) return 'Mesa de Centro con Jardinera';
+  if (clavesMesaAuxiliar.some(function(c) { return texto.indexOf(c) !== -1; })) return 'Mesa Auxiliar';
+
+  if (texto.indexOf('repisa') !== -1 || texto.indexOf('estante') !== -1) return 'Repisa Flotante';
+  if (texto.indexOf('recibidor') !== -1 || texto.indexOf('banco') !== -1) return 'Recibidor';
+  if (texto.indexOf('cama') !== -1 || texto.indexOf('nochero') !== -1) return 'Cama';
+
+  // Palabra genérica sin calificador — default logueado explícitamente.
+  if (texto.indexOf('escritorio') !== -1) {
+    console.log('📸⚠️ Fotos: "escritorio" sin calificador — usando default Escritorio Flotante. Texto: ' + texto.slice(0, 200));
+    return 'Escritorio Flotante';
+  }
+  if (texto.indexOf('mesa') !== -1) {
+    console.log('📸⚠️ Fotos: "mesa" sin calificador — usando default Mesa Auxiliar. Texto: ' + texto.slice(0, 200));
+    return 'Mesa Auxiliar';
+  }
+
+  return null;
+}
 
 // ─── SUBIDA DE ARCHIVOS DESDE EL PANEL (Cloudinary) ────────────────────────
 // Para que Lili pueda mandar imágenes/audios desde el panel sin saltar a otra app.
@@ -3334,23 +3432,45 @@ function enviarImagen(to, urlFoto, caption) {
   });
 }
 
-function enviarFotosSaludo(to) {
-  return enviarImagen(to, FOTOS.principal)
+// 🆕 FASE 3 (26 jul) — devuelve el set de fotos del producto detectado,
+// con el mismo fallback (Repisa Flotante) si el producto no vino o no
+// existe en el mapa.
+function fotosParaProducto(producto) {
+  return FOTOS_POR_PRODUCTO[producto] || FOTOS_POR_PRODUCTO[PRODUCTO_FOTOS_FALLBACK];
+}
+
+// Puras y testeables sin red (mismo criterio que extraerTagCotizarRepisa):
+// qué par de fotos va en cada envío.
+function seleccionarFotosSaludo(fotos) {
+  return [fotos[0], fotos[1] || fotos[0]];
+}
+function seleccionarFotosExtra(fotos) {
+  // Si el producto tiene 3+ fotos, esta vez muestra la 2ª y 3ª (distintas a
+  // las que ya se vieron en el saludo); si solo tiene 2, no hay más
+  // disponibles y se repiten.
+  if (fotos.length >= 3) return [fotos[1], fotos[2]];
+  return [fotos[0], fotos[1] || fotos[0]];
+}
+
+function enviarFotosSaludo(to, producto) {
+  var par = seleccionarFotosSaludo(fotosParaProducto(producto));
+  return enviarImagen(to, par[0])
     .then(function() {
       return new Promise(function(resolve) { setTimeout(resolve, 1500); });
     })
     .then(function() {
-      return enviarImagen(to, FOTOS.acompanante);
+      return enviarImagen(to, par[1]);
     });
 }
 
-function enviarFotosExtra(to) {
-  return enviarImagen(to, FOTOS.extra_1)
+function enviarFotosExtra(to, producto) {
+  var par = seleccionarFotosExtra(fotosParaProducto(producto));
+  return enviarImagen(to, par[0])
     .then(function() {
       return new Promise(function(resolve) { setTimeout(resolve, 1500); });
     })
     .then(function() {
-      return enviarImagen(to, FOTOS.extra_2);
+      return enviarImagen(to, par[1]);
     });
 }
 
@@ -3461,6 +3581,12 @@ app.construirCatalogoRepisasV2 = construirCatalogoRepisasV2;
 app.sembrarPreciosRepisas = sembrarPreciosRepisas;
 app.extraerTagCotizarRepisa = extraerTagCotizarRepisa;
 app.quitarTagCotizarRepisa = quitarTagCotizarRepisa;
+app.detectarProductoParaFotos = detectarProductoParaFotos;
+app.FOTOS_POR_PRODUCTO = FOTOS_POR_PRODUCTO;
+app.PRODUCTO_FOTOS_FALLBACK = PRODUCTO_FOTOS_FALLBACK;
+app.fotosParaProducto = fotosParaProducto;
+app.seleccionarFotosSaludo = seleccionarFotosSaludo;
+app.seleccionarFotosExtra = seleccionarFotosExtra;
 app.__setPreciosRepisasParaPruebas = function(filas) { preciosRepisas = filas; };
 app.procesarMensaje = procesarMensaje;
 app.manejarCotizacionRepisa = manejarCotizacionRepisa;
