@@ -31,6 +31,18 @@ test('detectarProductoDesdeReferral — reconoce Escritorio por source_url', fun
   assert.equal(producto, 'Escritorio Flotante');
 });
 
+test('detectarProductoDesdeReferral — bug real 27 jul: anuncio de Escritorio ya no cae en falso positivo de Mesa Auxiliar', function() {
+  // Antes del Paso A, 'versión'/'compacta' estaban en las claves de Mesa
+  // Auxiliar y Mesa Auxiliar se evaluaba antes que Escritorio en
+  // CLAVES_PRODUCTO_FORMULARIO — cualquier anuncio de Escritorio que usara
+  // esas palabras genéricas en su copy ganaba el falso positivo.
+  const producto = app.detectarProductoDesdeReferral({
+    headline: 'El escritorio flotante del anuncio',
+    body: 'Nueva versión compacta, mide 75×45×15cm, vale $1.590.000'
+  });
+  assert.equal(producto, 'Escritorio Flotante');
+});
+
 test('detectarProductoDesdeReferral — sin referral_data devuelve null (no rompe)', function() {
   assert.equal(app.detectarProductoDesdeReferral(null), null);
   assert.equal(app.detectarProductoDesdeReferral({}), null);

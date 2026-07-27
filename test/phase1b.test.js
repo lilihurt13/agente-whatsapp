@@ -34,12 +34,27 @@ test('detectarProductoFormulario — reconoce Repisa por el nombre del campo', f
   assert.equal(producto, 'Repisa Flotante');
 });
 
-test('detectarProductoFormulario — reconoce Mesa Auxiliar por el valor elegido (Compacta/Clásica)', function() {
+test('detectarProductoFormulario — reconoce Mesa Auxiliar por el nombre del campo (Paso B, pasada 1)', function() {
+  const producto = app.detectarProductoFormulario([
+    { name: 'donde_necesitas_la_mesa_auxiliar', values: ['Medellín'] }
+  ]);
+  assert.equal(producto, 'Mesa Auxiliar');
+});
+
+test('detectarProductoFormulario — nombre genérico cae al respaldo por valor (Paso B, pasada 2)', function() {
+  const producto = app.detectarProductoFormulario([
+    { name: 'que_version_te_interesa', values: ['Quiero la mesa auxiliar en la versión compacta'] },
+    { name: 'donde_la_necesitas', values: ['Medellín'] }
+  ]);
+  assert.equal(producto, 'Mesa Auxiliar');
+});
+
+test('detectarProductoFormulario — palabra genérica sola ("Compacta") ya NO produce falso positivo (Paso A)', function() {
   const producto = app.detectarProductoFormulario([
     { name: 'que_version_te_interesa', values: ['Compacta 35×45×50cm $390.000'] },
     { name: 'donde_la_necesitas', values: ['Medellín'] }
   ]);
-  assert.equal(producto, 'Mesa Auxiliar');
+  assert.equal(producto, null, 'sin la palabra "mesa" en ningún lado, ya no debe adivinar Mesa Auxiliar');
 });
 
 test('detectarProductoFormulario — reconoce Escritorio por el nombre del campo', function() {
