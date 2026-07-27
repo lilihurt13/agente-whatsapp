@@ -86,3 +86,38 @@ construcción, no es solo un tema de precio. Esta regla de escalamiento
 tampoco está implementada todavía (decisión de Lili, 27 jul 2026:
 fuera de alcance mientras se ajusta el cotizador v2 para el caso de
 profundidad ≠ 15cm).
+
+## Cerrado — la tarjeta de "Anuncio de Facebook" en WhatsApp puede mostrar otro anuncio (no es un bug nuestro)
+
+**Cerrado (27 jul 2026).** Lili reportó un caso con evidencia visual: el
+lead `573174689618` (conversación en la app de WhatsApp Business) mostraba
+la tarjeta de "Anuncio de Facebook" con el texto de un anuncio de
+Escritorio Flotante, pero Olivia respondió sobre Mesa Auxiliar.
+
+**Investigado y descartado como bug del código.** Se consultó
+`leads.referral_data` real en la base de datos para ese número: el
+`headline`/`body` guardado ahí corresponde inequívocamente a un anuncio de
+**Mesa Auxiliar** ("Mesa auxiliar desde $390.000", con las opciones
+Compacta/Clásica). Es decir, `referral_data` (lo que Meta le manda a
+nuestro webhook) y la respuesta de Olivia coincidían correctamente. La
+tarjeta visual que muestra la app de WhatsApp Business en el celular es
+una pieza de UI de Meta, independiente del payload de `referral` que
+recibe el webhook — puede mostrar información de otro anuncio (ej. por
+caché, por un anuncio distinto que el cliente vio antes en el mismo hilo,
+o por comportamiento propio de Meta) sin que eso refleje lo que realmente
+llegó a `whatsapp_agent.js`.
+
+**Si vuelve a surgir esta confusión:** confirmar primero con
+`scripts/ver_referral_lead.js` (o la consulta SQL directa a
+`leads.referral_data`) qué anuncio quedó realmente registrado para ese
+lead, antes de asumir que Olivia detectó mal el producto. Si
+`referral_data` coincide con la respuesta de Olivia, el problema es de
+visualización en la app de Meta, no de nuestro código, y no hay nada que
+corregir en `whatsapp_agent.js`.
+
+**Nota aparte:** el reporte de este caso sí sirvió para encontrar un
+riesgo real y distinto en el código — `CLAVES_PRODUCTO_FORMULARIO` tenía
+palabras genéricas (`'versión'`, `'compacta'`, `'clásica'`) en las claves
+de Mesa Auxiliar que podían cruzarse con el copy de otros anuncios. Ese
+fix sí era necesario y quedó hecho — ver la entrada del 27 jul en el
+historial de Fase 1A/Ajustes.
