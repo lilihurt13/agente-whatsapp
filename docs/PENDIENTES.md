@@ -32,3 +32,25 @@ evaluar:
 No bloquea nada del sistema actual — todos los flujos (con formulario, con
 solo referral, o sin ninguno de los dos) ya funcionan de forma segura y
 sin romperse.
+
+## Fase C futura — descuento por volumen en el cotizador de repisas
+
+**Decisión de negocio (26 jul 2026, durante la integración del cotizador
+v2):** `resolverPrecioRepisa()` solo resuelve el precio de **una unidad**
+— no multiplica por `cantidad` ni aplica ninguna regla de volumen. Ya
+existen reglas de descuento por volumen aprobadas por Lili (2-3 unidades
+5-10%, 4-6 unidades 10-20%, etc.), pero **no están implementadas todavía**.
+
+Por eso, mientras no exista esa lógica: **`cantidad > 1` siempre escala a
+Lili** — nunca se calcula ni se ofrece un precio cerrado automático para
+pedidos de más de una repisa (mismo criterio que la modalidad `recogida`).
+Esto ya está reflejado en `extraerTagCotizarRepisa()`
+(`elegibleParaCalculoAutomatico: cantidad === 1`) — ver
+`docs/COTIZADOR_V2_PLAN.md`.
+
+**Pendiente para una sesión futura:** implementar `calcularDescuentoPorVolumen(cantidad, precioUnitario)`
+con su propia tabla de reglas (a definir con Lili: los rangos exactos y
+si el descuento aplica sobre `comercial_instalado`/`comercial_enviado` o
+sobre el `precioFinalSugerido` ya resuelto), y solo entonces permitir que
+`cantidad > 1` participe en el cálculo automático del tag
+`[COTIZAR_REPISA:...]`.
