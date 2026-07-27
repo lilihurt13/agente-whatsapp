@@ -1209,7 +1209,7 @@ El catálogo de arriba (precio directo, sin preguntar nada, para las 15 medidas 
 
 CASO NORMAL — el cliente da una medida (largo) sin mencionar profundidad:
 Sigue el flujo de siempre: da el precio de la opción estándar de 15cm directo, sin preguntar nada antes (como ya haces). Pero además, menciona con naturalidad que existen otras profundidades (20, 25 o 30cm) por si el cliente las necesita — sin convertir esto en una pregunta obligatoria ni retrasar el precio. Ejemplo:
-"Perfecto 😊 La de 80cm en roble macizo, 15cm de profundidad, instalación incluida en Medellín. Queda en $260.000. También la manejamos en otras profundidades (20, 25 o 30cm) si tu espacio lo requiere — ¿esta te sirve o necesitas otra? 😊"
+"Perfecto 😊 La de 80cm en roble natural, 15cm de profundidad, instalación incluida en Medellín. Queda en $260.000. También la manejamos en otras profundidades (20, 25 o 30cm) si tu espacio lo requiere — ¿esta te sirve o necesitas otra? 😊"
 
 CASO QUE ACTIVA ESTE BLOQUE — el cliente pide explícitamente una profundidad distinta a 15cm, ya sea porque lo dijo desde el principio o porque eligió una de las que ofreciste:
 Aquí SÍ tienes PROHIBIDO calcular, interpolar, estimar o redondear el precio por tu cuenta — ni siquiera usando la tabla de 15cm del catálogo de arriba (esa tabla no aplica a otras profundidades). El precio de una profundidad distinta a 15cm SIEMPRE lo calcula el sistema, nunca tú. Trátala como una candidata normal a cotizar — NO la trates como una excepción rara que hay que escalar de una vez. El sistema puede calcularla automáticamente en la mayoría de los casos.
@@ -3315,10 +3315,21 @@ async function manejarCotizacionRepisa(from, texto, tag, systemConContexto, mens
       return;
     }
 
+    // 🆕 (27 jul) — estilo del mensaje final corregido por Lili tras ver el
+    // primer caso real (110×25 → $380.000): material, cierre y tiempos de
+    // fabricación específicos para esta redacción (segunda llamada).
+    var textoTiemposRepisa = tag.modalidadParaResolver === 'enviado'
+      ? 'El tiempo de fabricación es de 5 a 6 días, más 2 días adicionales por el envío a tu ciudad.'
+      : 'El tiempo de fabricación e instalación es de 5 a 6 días.';
+
     var bloqueResultado = '\n\nPRECIO YA CALCULADO POR EL SISTEMA para esta repisa (largo=' + tag.largoCm + 'cm, profundidad=' + tag.profundidadCm +
       'cm, modalidad=' + tag.modalidadTag + '): $' + resultado.precioFinalSugerido.toLocaleString('es-CO') +
       '. Redacta la respuesta final al cliente usando este precio exacto — NO lo recalcules, NO lo cambies, NO lo redondees de nuevo. ' +
-      'Sigue tus reglas normales: características antes que precio, tono cálido, cierra con una pregunta de acción concreta. ' +
+      'Sigue tus reglas normales: características antes que precio, tono cálido. ' +
+      'Material: di "roble natural" o "alistonado" — NUNCA digas "roble macizo". ' +
+      textoTiemposRepisa + ' ' +
+      'Cierra con esta pregunta EXACTA: "¿Te gustaría que avancemos con esta medida?" — NUNCA uses "¿Arrancamos?" ni otra variante para esta pregunta de cierre. ' +
+      'Después de esa pregunta, agrega una frase corta y cálida diciendo que si la repisa queda lista antes de tiempo, se le avisa. ' +
       'NUNCA menciones que hubo un cálculo interno ni ningún tag.';
 
     var response2 = await llamarClaude(systemConContexto + bloqueResultado, mensajesLimpios);

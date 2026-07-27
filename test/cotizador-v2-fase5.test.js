@@ -77,6 +77,43 @@ test('manejarCotizacionRepisa — datos completos y elegibles: calcula, redacta,
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// 🆕 (27 jul) — estilo del mensaje final corregido por Lili tras el primer
+// caso real (material, cierre, tiempos de envío)
+// ─────────────────────────────────────────────────────────────────────────
+test('manejarCotizacionRepisa — modalidad instalado: instruye material "roble natural"/"alistonado" (nunca "roble macizo"), el cierre exacto pedido, y tiempos sin envío', async function() {
+  const numero = '573000000107';
+  prepararEntorno(numero);
+
+  app.__setLlamarClaudeParaPruebas(function(systemPrompt) {
+    assert.ok(systemPrompt.indexOf('roble natural') !== -1 || systemPrompt.indexOf('alistonado') !== -1);
+    assert.ok(systemPrompt.indexOf('NUNCA digas "roble macizo"') !== -1);
+    assert.ok(systemPrompt.indexOf('¿Te gustaría que avancemos con esta medida?') !== -1);
+    assert.ok(systemPrompt.indexOf('NUNCA uses "¿Arrancamos?"') !== -1);
+    assert.ok(systemPrompt.indexOf('5 a 6 días') !== -1);
+    assert.equal(systemPrompt.indexOf('2 días adicionales por el envío'), -1, 'modalidad instalado (Medellín) no debe mencionar días extra de envío');
+    assert.ok(systemPrompt.indexOf('si la repisa queda lista antes') !== -1);
+    return Promise.resolve({ data: { content: [{ text: '¡Listo! 😊' }] } });
+  });
+
+  const tag = app.extraerTagCotizarRepisa('[COTIZAR_REPISA:largo=110,prof=25,cantidad=1,ciudad=Medellín,modalidad=instalado_medellin]');
+  await app.manejarCotizacionRepisa(numero, 'texto original', tag, 'SYSTEM PROMPT BASE', []);
+});
+
+test('manejarCotizacionRepisa — modalidad enviado: agrega 2 días adicionales por el envío en la instrucción de tiempos', async function() {
+  const numero = '573000000108';
+  prepararEntorno(numero);
+
+  app.__setLlamarClaudeParaPruebas(function(systemPrompt) {
+    assert.ok(systemPrompt.indexOf('2 días adicionales por el envío') !== -1);
+    return Promise.resolve({ data: { content: [{ text: '¡Listo! 😊' }] } });
+  });
+
+  // 60x20 es exacta en el CSV (modalidad enviado) — no depende de la fórmula, solo prueba el texto de tiempos.
+  const tag = app.extraerTagCotizarRepisa('[COTIZAR_REPISA:largo=60,prof=20,cantidad=1,ciudad=Bogotá,modalidad=envio_nacional]');
+  await app.manejarCotizacionRepisa(numero, 'texto original', tag, 'SYSTEM PROMPT BASE', []);
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // Caso: cantidad > 1 → escala sin calcular, sin segunda llamada
 // ─────────────────────────────────────────────────────────────────────────
 test('manejarCotizacionRepisa — cantidad>1 escala sin calcular y sin segunda llamada a Claude', async function() {
