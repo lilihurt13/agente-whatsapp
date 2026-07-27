@@ -73,3 +73,16 @@ la misma lógica de detección de `[FOTOS_EXTRA]`/primer-mensaje y envío
 de fotos que ya tiene el camino principal (usando
 `detectarProductoParaFotos()` una vez esté conectado — ver Fase 3 de
 `feature/fotos-por-producto`).
+
+## Familia de repisas entamboradas — pendiente
+
+Repisas con espesor 4.5cm (material 15mm) o 5.4cm (material 18mm),
+instalación con listones en vez de soportes invisibles — familia de
+producto distinta a la actual, no implementada todavía.
+
+Cuando un cliente pida un espesor EXACTO de 4cm o 5cm (no 4.5 ni
+5.4cm), Olivia debe escalar siempre — cambia el proceso real de
+construcción, no es solo un tema de precio. Esta regla de escalamiento
+tampoco está implementada todavía (decisión de Lili, 27 jul 2026:
+fuera de alcance mientras se ajusta el cotizador v2 para el caso de
+profundidad ≠ 15cm).

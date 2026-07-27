@@ -931,13 +931,28 @@ function getSystemPrompt() {
   // ─── COTIZADOR V2 REPISAS — FASE 4/5, detrás de feature flag ───────────
   // Con el flag apagado (default), bloqueCotizadorV2 queda vacío y el
   // prompt es idéntico al de hoy — cero cambio de comportamiento.
+  //
+  // 🆕 AJUSTE (27 jul) — decisión de diseño de Lili: el bloque ya NO
+  // reclama "prioridad" sobre las reglas viejas del catálogo v1 (a-e,
+  // ver diagnóstico previo) — en vez de eso, se auto-limita a profundidad
+  // ≠ 15cm, dejando el caso de 15cm (el 100% del catálogo v1) intacto y
+  // sin ningún solapamiento. Elimina el conflicto de raíz en vez de
+  // intentar forzar que una instrucción declarativa le gane a 5 secciones
+  // repetidas con ejemplos concretos.
   var bloqueCotizadorV2 = cotizadorRepisasV2Habilitado() ? `
 
-COTIZADOR DE REPISAS — CÁLCULO DE PRECIO VÍA TAG INTERNO (esta sección tiene prioridad sobre cualquier instrucción anterior de calcular, dar, o leer directamente de una tabla el precio de una repisa):
+COTIZADOR DE REPISAS — PROFUNDIDADES DISTINTAS A 15CM, CÁLCULO VÍA TAG INTERNO:
 
-Tienes PROHIBIDO calcular, interpolar, estimar o redondear el precio de una repisa por tu cuenta — ni siquiera usando alguna tabla de precios mencionada en otra parte de este prompt. El precio de una repisa SIEMPRE lo calcula el sistema, nunca tú.
+El catálogo de arriba (precio directo, sin preguntar nada, para las 15 medidas de largo) es SOLO para la profundidad estándar de 15cm — eso sigue exactamente igual, no cambia. Este bloque se activa ÚNICAMENTE cuando la conversación se sale de esa profundidad estándar.
 
-Cuando el cliente quiera cotizar una repisa Y ya tengas estos 4 datos confirmados en la conversación — largo (cm), profundidad (cm), ciudad, y cantidad — Y la cantidad sea exactamente 1, responde ÚNICAMENTE con este tag interno, sin ningún otro texto antes o después, en este formato EXACTO:
+CASO NORMAL — el cliente da una medida (largo) sin mencionar profundidad:
+Sigue el flujo de siempre: da el precio de la opción estándar de 15cm directo, sin preguntar nada antes (como ya haces). Pero además, menciona con naturalidad que existen otras profundidades (20, 25 o 30cm) por si el cliente las necesita — sin convertir esto en una pregunta obligatoria ni retrasar el precio. Ejemplo:
+"Perfecto 😊 La de 80cm en roble macizo, 15cm de profundidad, instalación incluida en Medellín. Queda en $260.000. También la manejamos en otras profundidades (20, 25 o 30cm) si tu espacio lo requiere — ¿esta te sirve o necesitas otra? 😊"
+
+CASO QUE ACTIVA ESTE BLOQUE — el cliente pide explícitamente una profundidad distinta a 15cm (20, 25 o 30cm), ya sea porque lo dijo desde el principio o porque eligió una de las que ofreciste:
+Aquí SÍ tienes PROHIBIDO calcular, interpolar, estimar o redondear el precio por tu cuenta — ni siquiera usando la tabla de 15cm del catálogo de arriba (esa tabla no aplica a otras profundidades). El precio de una profundidad distinta a 15cm SIEMPRE lo calcula el sistema, nunca tú.
+
+Cuando el cliente quiera cotizar una repisa con profundidad distinta a 15cm Y ya tengas estos 4 datos confirmados en la conversación — largo (cm), profundidad (cm), ciudad, y cantidad — Y la cantidad sea exactamente 1, responde ÚNICAMENTE con este tag interno, sin ningún otro texto antes o después, en este formato EXACTO:
 [COTIZAR_REPISA:largo=<numero>,prof=<numero>,cantidad=1,ciudad=<ciudad>,modalidad=<modalidad>]
 
 <modalidad> es una de estas tres:
@@ -945,11 +960,11 @@ Cuando el cliente quiera cotizar una repisa Y ya tengas estos 4 datos confirmado
 - envio_nacional — el cliente confirmó que está en otra ciudad (sin instalación).
 - recogida — SOLO si el cliente dice explícitamente que puede recoger el pedido él mismo.
 
-Un sistema interno calculará el precio exacto a partir de este tag y te lo entregará después para que redactes la respuesta final al cliente — tú nunca calculas, solo identificas cuándo ya tienes los 4 datos y emites el tag.
+Un sistema interno calculará el precio exacto a partir de este tag y te lo entregará después para que redactes la respuesta final al cliente — tú nunca calculas, solo identificas cuándo ya tienes los 4 datos (con profundidad distinta a 15cm) y emites el tag.
 
 Este tag es completamente interno. NUNCA lo muestres junto con otro texto, NUNCA lo menciones ni lo expliques al cliente, NUNCA digas que existe un "tag" o un "sistema de cálculo" — el cliente jamás debe ver la palabra COTIZAR_REPISA ni nada parecido.
 
-Si te falta CUALQUIERA de los 4 datos, NO emitas el tag — en vez de eso, pregunta con naturalidad lo que falte, un dato a la vez, como ya haces normalmente.
+Si ya sabes que la profundidad es distinta a 15cm pero te falta el largo, la ciudad o la cantidad, NO emitas el tag — en vez de eso, pregunta con naturalidad lo que falte, un dato a la vez, como ya haces normalmente.
 
 Si la cantidad es mayor a 1, NUNCA emitas el tag — el sistema todavía no calcula automáticamente descuentos por volumen. Reconoce la cantidad con calidez, confirma que todas las piezas son iguales, y escala con [ESCALAR] sin dar ningún precio, ni siquiera aproximado.` : '';
 
