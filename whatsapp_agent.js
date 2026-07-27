@@ -26,6 +26,18 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
 const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET;
 
+// 🆕 COTIZADOR V2 REPISAS — FASE 5 (26 jul) — feature flag. Por defecto
+// (variable ausente o distinta de 'true') el bloque del tag
+// [COTIZAR_REPISA:...] NUNCA se agrega al system prompt — Olivia se
+// comporta exactamente igual que hoy, sin ningún riesgo. Se activa
+// poniendo COTIZADOR_REPISAS_V2_ENABLED=true en las variables de Railway
+// (requiere redeploy) — permite probar con un lead real antes de decidir
+// si se deja activo para todos. Función (no const de arranque) para que
+// las pruebas puedan alternarlo dentro de la misma ejecución de Node.
+function cotizadorRepisasV2Habilitado() {
+  return process.env.COTIZADOR_REPISAS_V2_ENABLED === 'true';
+}
+
 function esNumeroValido(n) {
   return typeof n === 'string' && /^\d{5,20}$/.test(n);
 }
@@ -916,6 +928,31 @@ function verificarModoCampana() {
 function getSystemPrompt() {
   var campana = esCampanaActiva();
 
+  // ─── COTIZADOR V2 REPISAS — FASE 4/5, detrás de feature flag ───────────
+  // Con el flag apagado (default), bloqueCotizadorV2 queda vacío y el
+  // prompt es idéntico al de hoy — cero cambio de comportamiento.
+  var bloqueCotizadorV2 = cotizadorRepisasV2Habilitado() ? `
+
+COTIZADOR DE REPISAS — CÁLCULO DE PRECIO VÍA TAG INTERNO (esta sección tiene prioridad sobre cualquier instrucción anterior de calcular, dar, o leer directamente de una tabla el precio de una repisa):
+
+Tienes PROHIBIDO calcular, interpolar, estimar o redondear el precio de una repisa por tu cuenta — ni siquiera usando alguna tabla de precios mencionada en otra parte de este prompt. El precio de una repisa SIEMPRE lo calcula el sistema, nunca tú.
+
+Cuando el cliente quiera cotizar una repisa Y ya tengas estos 4 datos confirmados en la conversación — largo (cm), profundidad (cm), ciudad, y cantidad — Y la cantidad sea exactamente 1, responde ÚNICAMENTE con este tag interno, sin ningún otro texto antes o después, en este formato EXACTO:
+[COTIZAR_REPISA:largo=<numero>,prof=<numero>,cantidad=1,ciudad=<ciudad>,modalidad=<modalidad>]
+
+<modalidad> es una de estas tres:
+- instalado_medellin — el cliente está en Medellín o su área metropolitana cercana (instalación incluida). Es el valor por defecto si no queda claro que es de otra ciudad.
+- envio_nacional — el cliente confirmó que está en otra ciudad (sin instalación).
+- recogida — SOLO si el cliente dice explícitamente que puede recoger el pedido él mismo.
+
+Un sistema interno calculará el precio exacto a partir de este tag y te lo entregará después para que redactes la respuesta final al cliente — tú nunca calculas, solo identificas cuándo ya tienes los 4 datos y emites el tag.
+
+Este tag es completamente interno. NUNCA lo muestres junto con otro texto, NUNCA lo menciones ni lo expliques al cliente, NUNCA digas que existe un "tag" o un "sistema de cálculo" — el cliente jamás debe ver la palabra COTIZAR_REPISA ni nada parecido.
+
+Si te falta CUALQUIERA de los 4 datos, NO emitas el tag — en vez de eso, pregunta con naturalidad lo que falte, un dato a la vez, como ya haces normalmente.
+
+Si la cantidad es mayor a 1, NUNCA emitas el tag — el sistema todavía no calcula automáticamente descuentos por volumen. Reconoce la cantidad con calidez, confirma que todas las piezas son iguales, y escala con [ESCALAR] sin dar ningún precio, ni siquiera aproximado.` : '';
+
   // ─── TABLA DE PRECIOS ───────────────────────────────────────────────────
   var tablaPrecios = campana
     ? `  40cm  → $153.000 (2 soportes)
@@ -1362,26 +1399,7 @@ CUANDO ESCALAR (respuestas naturales y cálidas. Como Olivia es del equipo, SÍ 
 IMPORTANTE: [ESCALAR] es interno, el sistema lo elimina del mensaje al cliente y notifica a Lili.
 
 TIEMPO: NUNCA digas "en un momento" para cotizaciones — puede tomar horas o dias.
-
-COTIZADOR DE REPISAS — CÁLCULO DE PRECIO VÍA TAG INTERNO (esta sección tiene prioridad sobre cualquier instrucción anterior de calcular, dar, o leer directamente de una tabla el precio de una repisa):
-
-Tienes PROHIBIDO calcular, interpolar, estimar o redondear el precio de una repisa por tu cuenta — ni siquiera usando alguna tabla de precios mencionada en otra parte de este prompt. El precio de una repisa SIEMPRE lo calcula el sistema, nunca tú.
-
-Cuando el cliente quiera cotizar una repisa Y ya tengas estos 4 datos confirmados en la conversación — largo (cm), profundidad (cm), ciudad, y cantidad — Y la cantidad sea exactamente 1, responde ÚNICAMENTE con este tag interno, sin ningún otro texto antes o después, en este formato EXACTO:
-[COTIZAR_REPISA:largo=<numero>,prof=<numero>,cantidad=1,ciudad=<ciudad>,modalidad=<modalidad>]
-
-<modalidad> es una de estas tres:
-- instalado_medellin — el cliente está en Medellín o su área metropolitana cercana (instalación incluida). Es el valor por defecto si no queda claro que es de otra ciudad.
-- envio_nacional — el cliente confirmó que está en otra ciudad (sin instalación).
-- recogida — SOLO si el cliente dice explícitamente que puede recoger el pedido él mismo.
-
-Un sistema interno calculará el precio exacto a partir de este tag y te lo entregará después para que redactes la respuesta final al cliente — tú nunca calculas, solo identificas cuándo ya tienes los 4 datos y emites el tag.
-
-Este tag es completamente interno. NUNCA lo muestres junto con otro texto, NUNCA lo menciones ni lo expliques al cliente, NUNCA digas que existe un "tag" o un "sistema de cálculo" — el cliente jamás debe ver la palabra COTIZAR_REPISA ni nada parecido.
-
-Si te falta CUALQUIERA de los 4 datos, NO emitas el tag — en vez de eso, pregunta con naturalidad lo que falte, un dato a la vez, como ya haces normalmente.
-
-Si la cantidad es mayor a 1, NUNCA emitas el tag — el sistema todavía no calcula automáticamente descuentos por volumen. Reconoce la cantidad con calidez, confirma que todas las piezas son iguales, y escala con [ESCALAR] sin dar ningún precio, ni siquiera aproximado.
+${bloqueCotizadorV2}
 ${reglasCampana}`;
 }
 
@@ -2924,6 +2942,105 @@ app.post('/webhook', function(req, res) {
   }
 });
 
+// 🆕 FASE 5 (26 jul) — extraído a una función `let`-bound (en vez de una
+// llamada inline a axios.post) únicamente para poder inyectar un stub en
+// las pruebas (mismo patrón que app.__setPoolParaPruebas) — la
+// implementación real, usada en producción, es exactamente la misma
+// llamada que ya existía. Reutilizada por el intento principal, el
+// reintento automático, y la segunda llamada del cotizador (Fase 5).
+let llamarClaude = function(systemPrompt, mensajes) {
+  return axios.post(
+    'https://api.anthropic.com/v1/messages',
+    { model: 'claude-haiku-4-5', max_tokens: 600, system: systemPrompt, messages: mensajes },
+    { headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' } }
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 5 (26 jul) — ruta única de escalamiento seguro para cualquier
+// falla del flujo de cotización de repisa (cantidad>1, requiere_aprobacion,
+// o cualquier error inesperado). El cliente SIEMPRE recibe este mensaje
+// fijo — nunca silencio, nunca el tag crudo.
+// ═══════════════════════════════════════════════════════════════════════════
+function escalarCotizacionSinPrecio(from, razonInterna) {
+  var mensaje = 'Esa medida es más personalizada. Déjame confirmarla con Lili para darte el valor exacto 😊';
+  agregarMensaje(from, 'assistant', mensaje);
+  enviarMensaje(from, mensaje);
+  notificarLili(from, 'Cotización de repisa requiere aprobación manual: ' + razonInterna);
+  marcarPausado(from);
+  console.log('💲⏭️ Cotización de repisa escalada para ' + from + ' — ' + razonInterna);
+  delete procesando[from];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 5 (26 jul) — intercepta el tag [COTIZAR_REPISA:...], calcula el
+// precio con resolverPrecioRepisa() (nunca Claude), y hace una SEGUNDA
+// llamada a Claude con el precio ya inyectado para que redacte la
+// respuesta final. Ver docs/COTIZADOR_V2_PLAN.md para el diseño completo.
+//
+// - Punto A (acordado): la respuesta de la PRIMERA llamada (con el tag)
+//   nunca llega aquí siquiera — el llamador nunca la pasa a
+//   agregarMensaje(). Esta función solo guarda el resultado de la
+//   SEGUNDA llamada.
+// - Defensa en profundidad: vuelve a chequear elegibilidad por cantidad
+//   aunque el prompt ya le dice a Claude que no emita el tag si
+//   cantidad > 1 — nunca confiar solo en que el modelo siguió la
+//   instrucción.
+// - Sin reintento en la segunda llamada (decisión de Lili: mantener esta
+//   ruta simple y predecible) — cualquier falla cae directo en
+//   escalarCotizacionSinPrecio().
+// - procesando[from] se limpia en TODAS las salidas (éxito, escalamiento
+//   por regla de negocio, o error) — nunca deja al lead "trabado".
+// ═══════════════════════════════════════════════════════════════════════════
+async function manejarCotizacionRepisa(from, texto, tag, systemConContexto, mensajesLimpios) {
+  try {
+    if (!tag.elegibleParaCalculoAutomatico) {
+      escalarCotizacionSinPrecio(from, 'cantidad=' + tag.cantidad + ' (mayor a 1 — sin lógica de descuento por volumen implementada, ver docs/PENDIENTES.md)');
+      return;
+    }
+
+    var resultado = resolverPrecioRepisa(
+      { largoCm: tag.largoCm, profundidadCm: tag.profundidadCm, modalidad: tag.modalidadParaResolver },
+      preciosRepisas
+    );
+
+    if (resultado.tipoResolucion === 'requiere_aprobacion') {
+      escalarCotizacionSinPrecio(from, 'resolverPrecioRepisa devolvió requiere_aprobacion (' + (resultado.alerta || 'sin alerta específica') + ')');
+      return;
+    }
+
+    var bloqueResultado = '\n\nPRECIO YA CALCULADO POR EL SISTEMA para esta repisa (largo=' + tag.largoCm + 'cm, profundidad=' + tag.profundidadCm +
+      'cm, modalidad=' + tag.modalidadTag + '): $' + resultado.precioFinalSugerido.toLocaleString('es-CO') +
+      '. Redacta la respuesta final al cliente usando este precio exacto — NO lo recalcules, NO lo cambies, NO lo redondees de nuevo. ' +
+      'Sigue tus reglas normales: características antes que precio, tono cálido, cierra con una pregunta de acción concreta. ' +
+      'NUNCA menciones que hubo un cálculo interno ni ningún tag.';
+
+    var response2 = await llamarClaude(systemConContexto + bloqueResultado, mensajesLimpios);
+    var respuestaFinal = response2.data.content[0].text;
+    // Defensivo: por si la segunda llamada, contra toda instrucción, repitiera
+    // algún tag — nunca debe llegar nada de esto al cliente.
+    var textoLimpioFinal = respuestaFinal
+      .replace(/\[ESCALAR\]/g, '')
+      .replace(/\[FOTOS_EXTRA\]/g, '')
+      .replace(/\[COTIZAR_REPISA:[^\]]*\]/g, '')
+      .trim();
+
+    agregarMensaje(from, 'assistant', textoLimpioFinal); // único agregarMensaje de todo el flujo de cotización
+
+    if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
+      seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
+      guardarSeguimiento(from);
+    }
+
+    enviarMensaje(from, textoLimpioFinal);
+    console.log('💲✅ Cotización de repisa resuelta y enviada para ' + from + ': $' + resultado.precioFinalSugerido.toLocaleString('es-CO') + ' (' + resultado.tipoResolucion + ')');
+    delete procesando[from];
+  } catch (error) {
+    console.error('❌ Error en flujo de cotización de repisa para ' + from + ':', error.message);
+    escalarCotizacionSinPrecio(from, 'error inesperado: ' + error.message);
+  }
+}
+
 function procesarMensaje(from, texto, leadId, referralData) {
   if (!conversaciones[from]) conversaciones[from] = [];
 
@@ -3052,13 +3169,22 @@ function procesarMensaje(from, texto, leadId, referralData) {
     if (Array.isArray(m.content)) return { role: m.role, content: m.content };
     return { role: m.role, content: m.content };
   });
-  axios.post(
-    'https://api.anthropic.com/v1/messages',
-    { model: 'claude-haiku-4-5', max_tokens: 600, system: systemConContexto, messages: mensajesLimpios },
-    { headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' } }
-  ).then(function(response) {
+  llamarClaude(systemConContexto, mensajesLimpios).then(function(response) {
     var respuesta = response.data.content[0].text;
     console.log('Claude: ' + respuesta);
+
+    // 🆕 FASE 5 (26 jul) — intercepta [COTIZAR_REPISA:...] ANTES de guardar
+    // nada. La respuesta cruda con el tag NUNCA pasa por agregarMensaje()
+    // ni enviarMensaje() — es efímera. manejarCotizacionRepisa() se encarga
+    // de todo el resto de este turno (segunda llamada, guardado, envío, o
+    // escalamiento si algo falla) y de limpiar procesando[from] al final.
+    var tagCotizacion = extraerTagCotizarRepisa(respuesta);
+    if (tagCotizacion) {
+      console.log('💲 Tag COTIZAR_REPISA detectado para ' + from + ': ' + JSON.stringify(tagCotizacion));
+      manejarCotizacionRepisa(from, texto, tagCotizacion, systemConContexto, mensajesLimpios);
+      return;
+    }
+
     agregarMensaje(from, 'assistant', respuesta);
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
@@ -3110,13 +3236,18 @@ function procesarMensaje(from, texto, leadId, referralData) {
     // Claude puede fallar por rate limit o timeout puntual. Un solo reintento
     // resuelve la mayoría de estos casos sin que el lead reciba un mensaje de error.
     setTimeout(function() {
-      axios.post(
-        'https://api.anthropic.com/v1/messages',
-        { model: 'claude-haiku-4-5', max_tokens: 600, system: systemConContexto, messages: mensajesLimpios },
-        { headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' } }
-      ).then(function(response) {
+      llamarClaude(systemConContexto, mensajesLimpios).then(function(response) {
         console.log('✅ Reintento Claude exitoso para ' + from);
         var respuesta = response.data.content[0].text;
+
+        // 🆕 FASE 5 — mismo intercepto que en el intento principal.
+        var tagCotizacionReintento = extraerTagCotizarRepisa(respuesta);
+        if (tagCotizacionReintento) {
+          console.log('💲 Tag COTIZAR_REPISA detectado (reintento) para ' + from + ': ' + JSON.stringify(tagCotizacionReintento));
+          manejarCotizacionRepisa(from, texto, tagCotizacionReintento, systemConContexto, mensajesLimpios);
+          return;
+        }
+
         agregarMensaje(from, 'assistant', respuesta);
         var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
         var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').replace(/\[FOTOS_EXTRA\]/g, '').trim();
@@ -3307,6 +3438,7 @@ app.inicializarBD = inicializarBD;
 app.pool = pool;
 app.conversaciones = conversaciones;
 app.pausados = pausados;
+app.procesando = procesando;
 app.seguimientos = seguimientos;
 app.agregarMensaje = agregarMensaje;
 app.obtenerOCrearLead = obtenerOCrearLead;
@@ -3331,9 +3463,16 @@ app.extraerTagCotizarRepisa = extraerTagCotizarRepisa;
 app.quitarTagCotizarRepisa = quitarTagCotizarRepisa;
 app.__setPreciosRepisasParaPruebas = function(filas) { preciosRepisas = filas; };
 app.procesarMensaje = procesarMensaje;
+app.manejarCotizacionRepisa = manejarCotizacionRepisa;
+app.escalarCotizacionSinPrecio = escalarCotizacionSinPrecio;
 // Solo para pruebas: permite inyectar un pool simulado. Nunca se llama en
 // producción (Railway arranca con `node whatsapp_agent.js`, no hace `require`
 // de este archivo desde otro módulo).
 app.__setPoolParaPruebas = function(poolSimulado) { pool = poolSimulado; };
+// Solo para pruebas: permite inyectar un stub de llamarClaude, para probar
+// el flujo de cotización (Fase 5) sin hacer una llamada real a Anthropic.
+app.__setLlamarClaudeParaPruebas = function(fn) { llamarClaude = fn; };
+app.getSystemPrompt = getSystemPrompt;
+app.cotizadorRepisasV2Habilitado = cotizadorRepisasV2Habilitado;
 
 module.exports = app;
