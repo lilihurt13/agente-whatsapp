@@ -281,6 +281,120 @@ function elegibleParaFormulaRepisa(largoCm, profundidadCm, modalidad) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FASE 7 (27 jul) — capa determinística de respaldo. Confirmado con 3
+// pruebas reales consecutivas: Claude puede CONSERVAR el contexto de la
+// medida (la menciona correctamente en su respuesta) pero aun así elige
+// escalar en lenguaje natural en vez de emitir [COTIZAR_REPISA:...] — es
+// una decisión del modelo, no un problema de memoria ni del prompt (ya se
+// reforzó 3 veces en esta misma sesión). En vez de seguir peleando por
+// prompt, esta función detecta desde el HISTORIAL + el mensaje actual,
+// sin depender de que Claude coopere, si hay una cotización de repisa
+// segura para resolver — procesarMensaje() la usa para anular un
+// [ESCALAR] de Claude cuando corresponde (ver más abajo).
+//
+// Pura y testeable: no toca la BD, no llama a Claude, NUNCA calcula
+// precios (eso lo sigue haciendo exclusivamente resolverPrecioRepisa(),
+// sin cambios). Solo EXTRAE los parámetros; ante cualquier señal de caso
+// especial o ambigüedad, devuelve null y el escalamiento de Claude se
+// respeta tal cual — nunca inventa ni asume de más.
+// ═══════════════════════════════════════════════════════════════════════════
+var REGEX_MEDIDA_REPISA = /(\d{1,3})\s*[x×]\s*(\d{1,3})\s*(cm)?/i;
+// Palabras/medidas que indican un caso especial (entamborada, tipo caja,
+// espesor distinto a 3.6/3cm) — cualquiera de estas bloquea la detección,
+// sin importar dónde aparezca en el historial reciente.
+var REGEX_ESPESOR_ESPECIAL_REPISA = /4[.,]5\s*cm|5[.,]4\s*cm|\b5\s*cm\b|entamborada|tipo\s+caja|gruesa/i;
+
+// Área metropolitana de Medellín → modalidad instalado_medellin (mismo
+// criterio que "es el valor por defecto si no queda claro que es de otra
+// ciudad" del prompt). Ciudades reconocidas de la tabla de envíos →
+// envio_nacional (resolverPrecioRepisa ya se encarga de exigir fila
+// exacta o escalar, esta función no inventa envío). Ciudad no reconocida
+// → detección insegura, se descarta (return null).
+var CIUDADES_AREA_METRO_MEDELLIN_REPISA = ['medellin', 'medellín', 'envigado', 'sabaneta', 'itagui', 'itagüí', 'bello', 'la estrella', 'caldas', 'copacabana', 'girardota'];
+var CIUDADES_RECONOCIDAS_ENVIO_REPISA = ['bogota', 'bogotá', 'cali', 'barranquilla', 'pereira', 'valledupar', 'bucaramanga', 'cartagena', 'manizales', 'armenia', 'ibague', 'ibagué', 'dosquebradas'];
+var NOMBRE_CIUDAD_CANONICO_REPISA = {
+  medellin: 'Medellín', 'medellín': 'Medellín', envigado: 'Envigado', sabaneta: 'Sabaneta',
+  itagui: 'Itagüí', 'itagüí': 'Itagüí', bello: 'Bello', 'la estrella': 'La Estrella',
+  caldas: 'Caldas', copacabana: 'Copacabana', girardota: 'Girardota',
+  bogota: 'Bogotá', 'bogotá': 'Bogotá', cali: 'Cali', barranquilla: 'Barranquilla',
+  pereira: 'Pereira', valledupar: 'Valledupar', bucaramanga: 'Bucaramanga',
+  cartagena: 'Cartagena', manizales: 'Manizales', armenia: 'Armenia',
+  ibague: 'Ibagué', 'ibagué': 'Ibagué', dosquebradas: 'Dosquebradas'
+};
+
+function extraerTextosUsuarioRepisa(mensajeActual, historialReciente) {
+  var textos = (Array.isArray(historialReciente) ? historialReciente : [])
+    .filter(function(m) { return m && m.role === 'user' && typeof m.content === 'string'; })
+    .map(function(m) { return m.content; });
+  textos.push(mensajeActual || '');
+  return textos;
+}
+
+function detectarCiudadEnTextoRepisa(texto) {
+  var textoLower = (texto || '').toLowerCase();
+  for (var i = 0; i < CIUDADES_AREA_METRO_MEDELLIN_REPISA.length; i++) {
+    if (textoLower.indexOf(CIUDADES_AREA_METRO_MEDELLIN_REPISA[i]) !== -1) {
+      return { ciudad: NOMBRE_CIUDAD_CANONICO_REPISA[CIUDADES_AREA_METRO_MEDELLIN_REPISA[i]], modalidad: 'instalado_medellin' };
+    }
+  }
+  for (var j = 0; j < CIUDADES_RECONOCIDAS_ENVIO_REPISA.length; j++) {
+    if (textoLower.indexOf(CIUDADES_RECONOCIDAS_ENVIO_REPISA[j]) !== -1) {
+      return { ciudad: NOMBRE_CIUDAD_CANONICO_REPISA[CIUDADES_RECONOCIDAS_ENVIO_REPISA[j]], modalidad: 'envio_nacional' };
+    }
+  }
+  return null;
+}
+
+function detectarCotizacionRepisaDesdeContexto(params) {
+  params = params || {};
+  var textosUsuario = extraerTextosUsuarioRepisa(params.mensajeActual, params.historialReciente);
+  var textoCombinado = textosUsuario.join(' \n ');
+
+  // Cualquier señal de caso especial en CUALQUIER mensaje reciente bloquea
+  // la detección — más vale escalar de más que cotizar un caso que en
+  // realidad necesitaba revisión (entamborada, espesor, etc.).
+  if (REGEX_ESPESOR_ESPECIAL_REPISA.test(textoCombinado)) return null;
+
+  // Medida: busca desde el mensaje MÁS RECIENTE hacia atrás — si el
+  // cliente corrigió la medida en un mensaje posterior, esa es la válida.
+  var largoCm = null, profundidadCm = null;
+  for (var i = textosUsuario.length - 1; i >= 0; i--) {
+    var m = textosUsuario[i].match(REGEX_MEDIDA_REPISA);
+    if (m) {
+      largoCm = Number(m[1]);
+      profundidadCm = Number(m[2]);
+      break;
+    }
+  }
+  if (largoCm === null || profundidadCm === null) return null;
+
+  // Ciudad: prioriza el mensaje actual (lo normal es que llegue como
+  // respuesta a la pregunta de Olivia); si no, la busca hacia atrás.
+  var infoCiudad = detectarCiudadEnTextoRepisa(params.mensajeActual);
+  if (!infoCiudad) {
+    for (var k = textosUsuario.length - 2; k >= 0; k--) {
+      infoCiudad = detectarCiudadEnTextoRepisa(textosUsuario[k]);
+      if (infoCiudad) break;
+    }
+  }
+  if (!infoCiudad) return null;
+
+  // Mismos límites seguros que la fórmula (Fase 6) — sin duplicar la
+  // regla, reutiliza las constantes ya definidas arriba.
+  if (PROFUNDIDADES_ELEGIBLES_FORMULA_REPISA.indexOf(profundidadCm) === -1) return null;
+  if (largoCm < LARGO_MIN_FORMULA_REPISA || largoCm > LARGO_MAX_FORMULA_REPISA) return null;
+
+  return {
+    largoCm: largoCm,
+    profundidadCm: profundidadCm,
+    cantidad: 1,
+    ciudad: infoCiudad.ciudad,
+    modalidad: infoCiudad.modalidad,
+    fuente: 'contexto_reciente'
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 🆕 COTIZADOR V2 REPISAS (26 jul) — resolución determinística de precio en
 // JS puro. Claude NUNCA calcula ni interpola aritmética (esa regla se
 // mantiene sin cambios) — recibe el precio ya resuelto por esta función.
@@ -3377,6 +3491,39 @@ function procesarMensaje(from, texto, leadId, referralData) {
       return;
     }
 
+    // 🆕 FASE 7 (27 jul) — Claude no emitió el tag. Si además eligió
+    // escalar ([ESCALAR]), antes de aceptar ese escalamiento intentamos
+    // resolver la cotización nosotros mismos desde el historial reciente
+    // — ver detectarCotizacionRepisaDesdeContexto(). Si el sistema puede
+    // cotizar con seguridad, gana sobre el escalamiento genérico del
+    // modelo: nunca se envía el [ESCALAR] de Claude ni se notifica a
+    // Lili en ese caso. Solo corre con el flag encendido — con el flag
+    // apagado, cero cambio de comportamiento.
+    if (cotizadorRepisasV2Habilitado() && respuesta.indexOf('[ESCALAR]') !== -1) {
+      var contextoRepisa = detectarCotizacionRepisaDesdeContexto({ mensajeActual: texto, historialReciente: mensajesParaClaude });
+      if (contextoRepisa) {
+        console.log('💲🔍 [ESCALAR] de Claude anulado — cotización segura detectada por contexto para ' + from + ': ' + JSON.stringify(contextoRepisa));
+        var tagSintetico = {
+          tagEncontrado: true,
+          largoCm: contextoRepisa.largoCm,
+          profundidadCm: contextoRepisa.profundidadCm,
+          cantidad: contextoRepisa.cantidad,
+          ciudad: contextoRepisa.ciudad,
+          modalidadTag: contextoRepisa.modalidad,
+          modalidadParaResolver: MAPA_MODALIDAD_TAG_A_FUNCION[contextoRepisa.modalidad] || contextoRepisa.modalidad,
+          elegibleParaCalculoAutomatico: contextoRepisa.cantidad === 1
+        };
+        // Si resolverPrecioRepisa() (dentro de manejarCotizacionRepisa)
+        // igual devuelve requiere_aprobacion (ej. envío nacional sin fila
+        // exacta), el [ESCALAR] de Claude se respeta de todas formas —
+        // manejarCotizacionRepisa ya cae en escalarCotizacionSinPrecio()
+        // en ese caso, con el mismo log '💲⏭️ ... escalada' de siempre.
+        manejarCotizacionRepisa(from, texto, tagSintetico, systemConContexto, mensajesLimpios);
+        return;
+      }
+      console.log('💲🔍 Claude escaló con [ESCALAR] y no hay cotización segura detectable por contexto para ' + from + ' — se respeta el escalamiento');
+    }
+
     agregarMensaje(from, 'assistant', respuesta);
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
@@ -3771,6 +3918,7 @@ app.resolverPrecioRepisa = resolverPrecioRepisa;
 app.calcularPrecioRepisaDesdeFormula = calcularPrecioRepisaDesdeFormula;
 app.clasificarTamanoRepisa = clasificarTamanoRepisa;
 app.elegibleParaFormulaRepisa = elegibleParaFormulaRepisa;
+app.detectarCotizacionRepisaDesdeContexto = detectarCotizacionRepisaDesdeContexto;
 app.parsearCsvPreciosRepisas = parsearCsvPreciosRepisas;
 app.calcularRequiereAprobacionDescuento = calcularRequiereAprobacionDescuento;
 app.construirCatalogoRepisasV2 = construirCatalogoRepisasV2;
