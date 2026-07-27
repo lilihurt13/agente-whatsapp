@@ -1025,18 +1025,29 @@ function getSystemPrompt() {
   var campana = esCampanaActiva();
 
   // ─── COTIZADOR V2 REPISAS — FASE 4/5, detrás de feature flag ───────────
-  // Con el flag apagado (default), bloqueCotizadorV2 y notaRedireccionV2Profundidad
-  // quedan vacíos y el prompt es idéntico al de hoy — cero cambio de
-  // comportamiento (verificado por prueba).
+  // Con el flag apagado (default), bloqueCotizadorV2/notaRedireccionV2Profundidad/
+  // bulletProfundidadDistinta15cm quedan vacíos (o con su texto original) y el
+  // prompt es idéntico al de hoy — cero cambio de comportamiento (verificado
+  // por prueba).
   //
-  // 🆕 AJUSTE (27 jul) — auto-limitar bloqueCotizadorV2 a profundidad≠15cm
-  // (sin reclamar "prioridad" textual) NO fue suficiente en la práctica:
+  // 🆕 AJUSTE (27 jul, primer intento) — auto-limitar bloqueCotizadorV2 a
+  // profundidad≠15cm (sin reclamar "prioridad" textual) NO fue suficiente:
   // confirmado con un lead real de prueba (110×25cm) que Olivia escaló de
   // inmediato con [ESCALAR] sin nunca emitir el tag — la instrucción
-  // "CUÁNDO ESCALA SIEMPRE: Piden profundidad diferente a 15cm" del
-  // catálogo v1 (más arriba en el prompt) le ganó a este bloque (más
-  // abajo). Fix real: las reglas viejas ahora redirigen explícitamente a
-  // este bloque en vez de escalar de una vez — ver notaRedireccionV2Profundidad.
+  // "CUÁNDO ESCALA SIEMPRE: Piden profundidad diferente a 15cm" (más
+  // arriba en el prompt en ese momento) le ganó a este bloque (más abajo).
+  //
+  // 🆕 AJUSTE (27 jul, segundo intento) — agregar solo una nota de
+  // redirección a esa regla vieja TAMPOCO fue suficiente: un segundo lead
+  // de prueba mostró la misma escalada, con Claude reproduciendo casi
+  // textual el ejemplo de esa misma lista. Cambios más agresivos: (1)
+  // bloqueCotizadorV2 ahora se inserta ANTES de "CUÁNDO OLIVIA CIERRA
+  // SOLA"/"CUÁNDO ESCALA SIEMPRE" en vez de al final del prompt — el
+  // modelo lo lee primero; (2) el bullet "profundidad diferente a 15cm"
+  // se ELIMINA por completo de "CUÁNDO ESCALA SIEMPRE" con el flag
+  // encendido, en vez de solo llevar una nota — ver
+  // bulletProfundidadDistinta15cm. Sigue sin garantía absoluta (comportamiento
+  // de modelo, no de código) — confirmar con un tercer lead de prueba real.
   var v2Activo = cotizadorRepisasV2Habilitado();
 
   // Redirige las reglas viejas del catálogo v1 (que viven MÁS ARRIBA en
@@ -1045,14 +1056,40 @@ function getSystemPrompt() {
   // con el flag encendido — con el flag apagado, las reglas viejas quedan
   // exactamente como estaban (cero cambio de comportamiento).
   var notaRedireccionV2Profundidad = v2Activo
-    ? ' Si la profundidad es distinta a 15cm, NO apliques esta regla todavía — primero sigue la sección "COTIZADOR DE REPISAS — PROFUNDIDADES DISTINTAS A 15CM" más abajo en tus instrucciones; solo escalas si esa sección te lo indica.'
+    ? ' Si la profundidad es distinta a 15cm, NO apliques esta regla todavía — ya viste más arriba cómo se maneja eso (sección "COTIZADOR DE REPISAS — PROFUNDIDADES DISTINTAS A 15CM"); solo escalas si esa sección te lo indica.'
     : '';
+
+  // 🆕 (27 jul, segundo intento) — quitar el bullet ENTERO en vez de solo
+  // agregarle una nota no fue suficiente la primera vez: un lead real de
+  // prueba mostró que Claude seguía reproduciendo casi textual el ejemplo
+  // de escalamiento de esta misma lista ("Esa medida la fabricamos con
+  // gusto... [ESCALAR]"), ignorando la nota. Con el flag encendido, este
+  // bullet desaparece por completo de la lista "CUÁNDO ESCALA SIEMPRE" —
+  // ya no hay ninguna frase ahí que diga "profundidad diferente a 15cm =
+  // escalar" para que el modelo la reproduzca.
+  var bulletProfundidadDistinta15cm = v2Activo
+    ? ''
+    : '- Piden profundidad diferente a 15cm (30cm, 25cm, 40cm, etc.)\n';
+
+  // El título de la lista y la REGLA DURA también se aclaran (alcance
+  // explícito: "esta tabla de 15cm") cuando el flag está encendido — pero
+  // condicionado igual que todo lo demás. Con el flag apagado, quedan con
+  // el texto EXACTO de siempre (sin ninguna mención a "más arriba" ni a
+  // "esta tabla de 15cm", que solo tendrían sentido si bloqueCotizadorV2
+  // existiera).
+  var tituloEscalaSiempre = v2Activo
+    ? 'CUÁNDO ESCALA SIEMPRE (aunque la medida sea conocida — TODO ESTE BLOQUE ES SOLO PARA LA TABLA DE 15CM DE PROFUNDIDAD DE ARRIBA; para profundidad distinta a 15cm, ya viste más arriba cómo se maneja, ninguna de estas líneas aplica):'
+    : 'CUÁNDO ESCALA SIEMPRE (aunque la medida sea conocida):';
+
+  var reglaDuraTexto = v2Activo
+    ? '- REGLA DURA (esta tabla de 15cm): NUNCA calcules ni inventes precios fuera de ESTA TABLA DE 15CM DE PROFUNDIDAD. Si el LARGO pedido no aparece en esta tabla (a 15cm de profundidad), escala: "Esa medida la fabricamos con gusto 😊 Ya le aviso a Lili para que te confirme el valor exacto. [ESCALAR]"'
+    : '- REGLA DURA: NUNCA calcules ni inventes precios fuera de esta tabla. Si la medida o el caso no aparece, escala: "Esa medida la fabricamos con gusto 😊 Ya le aviso a Lili para que te confirme el valor exacto. [ESCALAR]"';
 
   var bloqueCotizadorV2 = v2Activo ? `
 
 COTIZADOR DE REPISAS — PROFUNDIDADES DISTINTAS A 15CM, CÁLCULO VÍA TAG INTERNO:
 
-🔴 PRIORIDAD — LEE ESTO ANTES QUE LAS REGLAS DE ESCALAMIENTO DE MÁS ARRIBA: cuando la repisa que pide el cliente tiene profundidad distinta a 15cm, esta sección es la que manda — NO las reglas de "CUÁNDO ESCALA SIEMPRE" ni "medidas no estándar" del catálogo de arriba. Esas reglas de arriba son para la tabla de 15cm de profundidad; una profundidad distinta a 15cm NUNCA es motivo, por sí sola, para escalar de inmediato. Antes de escalar por "profundidad distinta a 15cm", primero sigue el flujo de esta sección — solo escalas si esta sección te dice explícitamente que escales (ver más abajo cuáles son esos casos).
+🔴 PRIORIDAD — LEE ESTO ANTES DE SEGUIR LEYENDO EL RESTO DEL CATÁLOGO: más abajo vas a encontrar secciones tituladas "CUÁNDO ESCALA SIEMPRE" y una regla sobre "medidas no estándar" — ESAS SECCIONES SON SOLO PARA LA TABLA DE 15CM DE PROFUNDIDAD. Si la repisa que pide el cliente tiene profundidad distinta a 15cm, esta sección (la de aquí) es la que manda, no esas otras — una profundidad distinta a 15cm NUNCA es, por sí sola, motivo para escalar de inmediato. Antes de escalar por "profundidad distinta a 15cm", primero sigue el flujo de esta sección — solo escalas si esta sección te dice explícitamente que escales (ver más abajo cuáles son esos casos).
 
 El catálogo de arriba (precio directo, sin preguntar nada, para las 15 medidas de largo) es SOLO para la profundidad estándar de 15cm — eso sigue exactamente igual, no cambia. Este bloque se activa ÚNICAMENTE cuando la conversación se sale de esa profundidad estándar.
 
@@ -1311,22 +1348,21 @@ CATALOGO COMPLETO:
 ${tablaPrecios}
 
 ESPESOR — IMPORTANTE: el espesor estándar es 3.6cm (dos piezas de 18mm), PERO también se puede hacer en 3cm (dos piezas de 15mm) SIN cambio de precio ni de instalación — los herrajes invisibles funcionan igual de bien en los dos espesores. Si el lead pide específicamente 3cm o "más delgada", NO escales por eso — responde con naturalidad que sí se puede, mismo precio, y sigue con el flujo normal. SOLO escala si piden un espesor MENOR a 3cm (ahí sí hay riesgo real con los herrajes y se necesita revisión).
-
-CUÁNDO OLIVIA CIERRA SOLA (sin escalar):
+${bloqueCotizadorV2}
+CUÁNDO OLIVIA CIERRA SOLA (sin escalar, SOLO para profundidad 15cm — para profundidad distinta, ya viste arriba cómo se maneja):
 - La medida está en la tabla de 15 medidas de arriba (15cm de profundidad, espesor 3.6cm o 3cm — cualquiera de los dos).
 - Es para Medellín (instalación incluida) O es envío a ciudad principal con valor de tabla.
 - No hay ninguna complicación (no piden 30cm de profundidad, no es pared en L, no es cajón, no es módulo, no piden espesor menor a 3cm).
 En estos casos Olivia cierra sola: da precio → confirma medida → explica pago (60/40 transferencia Bancolombia) → escala para que Lili reciba el anticipo.
 
-CUÁNDO ESCALA SIEMPRE (aunque la medida sea conocida):
-- Piden profundidad diferente a 15cm (30cm, 25cm, 40cm, etc.)${notaRedireccionV2Profundidad}
-- Piden espesor MENOR a 3cm (ahí sí hay riesgo con los herrajes y se necesita revisión). Espesor de 3.6cm o 3cm NO escala, es normal.
+${tituloEscalaSiempre}
+${bulletProfundidadDistinta15cm}- Piden espesor MENOR a 3cm (ahí sí hay riesgo con los herrajes y se necesita revisión). Espesor de 3.6cm o 3cm NO escala, es normal.
 - Pared en L, cajón integrado, módulo cerrado, tapa superior.
 - Envío a ciudad NO principal (Ipiales, Pasto, o cualquier ciudad no listada en la tabla de envíos).
 - Repisas de 180 o 200cm con envío (escalar para confirmar costo de envío con Lili).
 - Combos con descuento (Olivia puede mencionarlos pero confirma con Lili antes de cerrar).
 - Cualquier duda sobre material, sistema de instalación en muro especial.
-- REGLA DURA: NUNCA calcules ni inventes precios fuera de esta tabla. Si la medida o el caso no aparece, escala: "Esa medida la fabricamos con gusto 😊 Ya le aviso a Lili para que te confirme el valor exacto. [ESCALAR]"${notaRedireccionV2Profundidad}
+${reglaDuraTexto}
 - Instalacion: Incluida en Medellin
 - Envio otras ciudades: SÍ se envía. Va empacada con sus soportes (el cliente la instala). NO hay instalación fuera de Medellín.
 - VALORES DE ENVÍO según ciudad:
@@ -1532,7 +1568,6 @@ CUANDO ESCALAR (respuestas naturales y cálidas. Como Olivia es del equipo, SÍ 
 IMPORTANTE: [ESCALAR] es interno, el sistema lo elimina del mensaje al cliente y notifica a Lili.
 
 TIEMPO: NUNCA digas "en un momento" para cotizaciones — puede tomar horas o dias.
-${bloqueCotizadorV2}
 ${reglasCampana}`;
 }
 

@@ -63,17 +63,22 @@ test('getSystemPrompt — con el flag encendido, el bloque V2 declara prioridad 
   conFlagV2(function() {
     const prompt = app.getSystemPrompt();
     assert.ok(prompt.indexOf('PRIORIDAD') !== -1, 'debe haber una declaración de prioridad explícita');
-    assert.ok(prompt.indexOf('esta sección es la que manda') !== -1);
+    assert.ok(prompt.indexOf('es la que manda') !== -1);
   });
 });
 
-test('getSystemPrompt — con el flag encendido, las 3 reglas viejas señaladas ahora redirigen al bloque V2 en vez de escalar directo', function() {
+test('getSystemPrompt — con el flag encendido, las 3 reglas viejas señaladas ahora redirigen/excluyen el caso de profundidad≠15cm en vez de escalar directo', function() {
   conFlagV2(function() {
     const prompt = app.getSystemPrompt();
+    // REGLA MAESTRA y el catch-all "medidas no estándar" llevan la nota de
+    // redirección (notaRedireccionV2Profundidad, que menciona el título de
+    // la sección V2 por nombre) — más el propio título de la sección, son
+    // al menos 3 menciones. La 3ra regla (REGLA DURA / CUÁNDO ESCALA
+    // SIEMPRE) ya no necesita la nota: directamente EXCLUYE el bullet de
+    // profundidad≠15cm de la lista (ver la prueba de más abajo).
     const ocurrencias = prompt.split('COTIZADOR DE REPISAS — PROFUNDIDADES DISTINTAS A 15CM').length - 1;
-    // Debe aparecer 1 vez como título de la sección, y repetida dentro de
-    // cada una de las 3 notas de redirección insertadas en las reglas viejas.
-    assert.ok(ocurrencias >= 4, 'la sección V2 debe mencionarse desde el título Y desde las 3 redirecciones (encontradas: ' + ocurrencias + ')');
+    assert.ok(ocurrencias >= 3, 'la sección V2 debe mencionarse desde el título Y desde al menos 2 redirecciones (encontradas: ' + ocurrencias + ')');
+    assert.ok(prompt.indexOf('TODO ESTE BLOQUE ES SOLO PARA LA TABLA DE 15CM') !== -1, 'la 3ra regla (CUÁNDO ESCALA SIEMPRE) debe excluir explícitamente el caso de profundidad≠15cm');
   });
 });
 
@@ -85,13 +90,34 @@ test('getSystemPrompt — con el flag encendido, ya NO exige preguntar la cantid
   });
 });
 
+test('getSystemPrompt — con el flag encendido (2do intento), el bullet "profundidad diferente a 15cm" se elimina por completo de CUÁNDO ESCALA SIEMPRE, no solo lleva una nota', function() {
+  conFlagV2(function() {
+    const prompt = app.getSystemPrompt();
+    assert.equal(prompt.indexOf('Piden profundidad diferente a 15cm (30cm, 25cm, 40cm, etc.)'), -1, 'el bullet que el modelo estaba reproduciendo casi textual debe desaparecer, no solo llevar una nota al lado');
+  });
+});
+
+test('getSystemPrompt — con el flag encendido (2do intento), el bloque V2 se lee ANTES que "CUÁNDO ESCALA SIEMPRE", no al final del prompt', function() {
+  conFlagV2(function() {
+    const prompt = app.getSystemPrompt();
+    const posBloqueV2 = prompt.indexOf('COTIZADOR DE REPISAS — PROFUNDIDADES DISTINTAS A 15CM');
+    const posEscalaSiempre = prompt.indexOf('CUÁNDO ESCALA SIEMPRE');
+    assert.ok(posBloqueV2 !== -1 && posEscalaSiempre !== -1, 'ambas secciones deben existir');
+    assert.ok(posBloqueV2 < posEscalaSiempre, 'el bloque V2 debe aparecer antes en el prompt, no después (posición V2=' + posBloqueV2 + ', posición vieja=' + posEscalaSiempre + ')');
+  });
+});
+
 test('getSystemPrompt — con el flag APAGADO, las reglas viejas quedan exactamente igual (sin la nota de redirección)', function() {
   const original = process.env.COTIZADOR_REPISAS_V2_ENABLED;
   delete process.env.COTIZADOR_REPISAS_V2_ENABLED;
   const prompt = app.getSystemPrompt();
   assert.equal(prompt.indexOf('COTIZADOR DE REPISAS — PROFUNDIDADES DISTINTAS A 15CM'), -1, 'con el flag apagado, la sección V2 no debe existir en absoluto');
-  assert.equal(prompt.indexOf('sigue primero la sección'), -1, 'sin la sección V2, las reglas viejas no deben referenciarla — cero cambio de comportamiento');
+  assert.equal(prompt.indexOf('ya viste más arriba cómo se maneja'), -1, 'sin la sección V2, las reglas viejas no deben referenciarla — cero cambio de comportamiento');
   assert.ok(prompt.indexOf('Piden profundidad diferente a 15cm (30cm, 25cm, 40cm, etc.)') !== -1, 'la regla vieja debe seguir presente, intacta, para el catálogo v1');
+  assert.ok(prompt.indexOf('CUÁNDO ESCALA SIEMPRE (aunque la medida sea conocida):\n- Piden profundidad diferente a 15cm') !== -1, 'el título de la lista debe quedar EXACTO al original, sin la aclaración de alcance nueva (bug real encontrado y corregido en esta misma sesión: se había escrito sin condicionar al flag)');
+  assert.ok(prompt.indexOf('- REGLA DURA: NUNCA calcules ni inventes precios fuera de esta tabla. Si la medida o el caso no aparece, escala:') !== -1, 'la REGLA DURA debe quedar EXACTA al texto original, sin el alcance "esta tabla de 15cm" agregado (mismo bug)');
+  assert.equal(prompt.indexOf('TODO ESTE BLOQUE ES SOLO PARA LA TABLA DE 15CM'), -1, 'la aclaración nueva del título NUNCA debe aparecer con el flag apagado');
+  assert.equal(prompt.indexOf('esta tabla de 15cm): NUNCA calcules'), -1, 'la REGLA DURA reescrita NUNCA debe aparecer con el flag apagado');
   if (original !== undefined) process.env.COTIZADOR_REPISAS_V2_ENABLED = original;
 });
 
