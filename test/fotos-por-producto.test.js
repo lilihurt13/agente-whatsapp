@@ -34,9 +34,8 @@ test('FOTOS_POR_PRODUCTO — ningún producto comparte fotos con otro (sin cruce
   assert.equal(unicas.size, todasLasUrls.length, 'hay URLs de fotos duplicadas entre productos distintos');
 });
 
-test('PRODUCTO_FOTOS_FALLBACK — es Repisa Flotante (producto ancla de la campaña)', function() {
-  assert.equal(app.PRODUCTO_FOTOS_FALLBACK, 'Repisa Flotante');
-  assert.ok(app.FOTOS_POR_PRODUCTO[app.PRODUCTO_FOTOS_FALLBACK]);
+test('PRODUCTO_FOTOS_FALLBACK — está deshabilitado: producto ambiguo nunca usa repisas', function() {
+  assert.equal(app.PRODUCTO_FOTOS_FALLBACK, null);
 });
 
 test('detectarProductoParaFotos — repisa', function() {
@@ -132,10 +131,10 @@ test('fotosParaProducto — devuelve las fotos propias de cada producto', functi
   });
 });
 
-test('fotosParaProducto — producto desconocido/null cae al fallback (Repisa Flotante)', function() {
-  assert.deepEqual(app.fotosParaProducto('Producto Inexistente'), app.FOTOS_POR_PRODUCTO['Repisa Flotante']);
-  assert.deepEqual(app.fotosParaProducto(null), app.FOTOS_POR_PRODUCTO['Repisa Flotante']);
-  assert.deepEqual(app.fotosParaProducto(undefined), app.FOTOS_POR_PRODUCTO['Repisa Flotante']);
+test('fotosParaProducto — producto desconocido/null no devuelve fotos de sustitución', function() {
+  assert.deepEqual(app.fotosParaProducto('Producto Inexistente'), []);
+  assert.deepEqual(app.fotosParaProducto(null), []);
+  assert.deepEqual(app.fotosParaProducto(undefined), []);
 });
 
 test('seleccionarFotosSaludo — usa las primeras 2 fotos del producto', function() {
@@ -177,4 +176,97 @@ test('Fase 3 — ningún producto termina mostrando fotos de otro producto (salu
       });
     });
   });
+});
+
+test('solicitudExplicitaFotos — "Sala" no autoriza fotos aunque Claude agregue el tag', function() {
+  assert.equal(app.solicitudExplicitaFotos('Sala', []), false);
+});
+
+test('solicitudExplicitaFotos — petición directa sí autoriza fotos', function() {
+  assert.equal(app.solicitudExplicitaFotos('¿Me mandas fotos de la mesa?', []), true);
+  assert.equal(app.solicitudExplicitaFotos('Quiero ver cómo queda', []), true);
+});
+
+test('solicitudExplicitaFotos — "Sí" solo autoriza si responde a una pregunta explícita sobre fotos', function() {
+  assert.equal(app.solicitudExplicitaFotos('Sí', [
+    { role: 'assistant', content: '¿Te gustaría verla en fotos o tienes alguna duda sobre las medidas?' }
+  ]), true);
+  assert.equal(app.solicitudExplicitaFotos('Sí', [
+    { role: 'assistant', content: '¿La estás pensando para la sala o la habitación?' }
+  ]), false);
+});
+
+test('solicitudFotoDetalleEspecifico — distingue un detalle inexistente de una petición general', function() {
+  assert.equal(app.solicitudFotoDetalleEspecifico('¿Tienes una foto del cajón por dentro?'), true);
+  assert.equal(app.solicitudFotoDetalleEspecifico('Muéstrame otro ángulo de los soportes'), true);
+  assert.equal(app.solicitudFotoDetalleEspecifico('¿Me mandas más fotos?'), false);
+});
+
+test('resolverProductoParaFotos — caso real: "Sí" conserva Mesa Auxiliar desde el historial', function() {
+  var historial = [
+    { role: 'user', content: 'Mesas pequeñas o mesitas de centro pequeños' },
+    { role: 'assistant', content: 'Tenemos la mesa auxiliar que es perfecta para esos espacios.' },
+    { role: 'user', content: 'Sala' },
+    { role: 'assistant', content: '¿Te gustaría verla en fotos?' },
+    { role: 'user', content: 'Si' }
+  ];
+  assert.equal(app.resolverProductoParaFotos({
+    textoActual: 'Si',
+    respuestaClaude: '¡Claro! Aquí te muestro cómo queda 😊 [FOTOS_EXTRA]',
+    historial: historial,
+    productoPersistido: null
+  }), 'Mesa Auxiliar');
+});
+
+test('resolverProductoParaFotos — producto persistido gana sobre menciones antiguas del historial', function() {
+  assert.equal(app.resolverProductoParaFotos({
+    textoActual: '¿Tienes otra foto?',
+    respuestaClaude: 'Claro',
+    historial: [{ role: 'assistant', content: 'También fabricamos repisas.' }],
+    productoPersistido: 'Mesa Auxiliar'
+  }), 'Mesa Auxiliar');
+});
+
+test('resolverProductoParaFotos — caso real 573207629644: referral de Mesa Auxiliar gana aunque saludo solo diga compacta/clásica', function() {
+  assert.equal(app.resolverProductoParaFotos({
+    textoActual: '¡Hola! Quiero más información',
+    respuestaClaude: '¿Cuál de los dos tamaños te llama más la atención? La compacta de 35×45cm o la clásica de 45×45cm.',
+    historial: [],
+    productoContextoOrigen: 'Mesa Auxiliar',
+    productoPersistido: null
+  }), 'Mesa Auxiliar');
+});
+
+test('resolverProductoParaFotos — el producto explícito actual puede cambiar el producto del referral', function() {
+  assert.equal(app.resolverProductoParaFotos({
+    textoActual: 'En realidad quiero ver el escritorio flotante',
+    respuestaClaude: '',
+    historial: [],
+    productoContextoOrigen: 'Mesa Auxiliar',
+    productoPersistido: 'Mesa Auxiliar'
+  }), 'Escritorio Flotante');
+});
+
+test('resolverProductoParaFotos — cambio explícito actualiza el producto activo', function() {
+  assert.equal(app.resolverProductoParaFotos({
+    textoActual: 'Mejor muéstrame la repisa flotante',
+    respuestaClaude: '',
+    historial: [{ role: 'assistant', content: 'Hablábamos de la mesa auxiliar.' }],
+    productoPersistido: 'Mesa Auxiliar'
+  }), 'Repisa Flotante');
+});
+
+test('resolverProductoParaFotos — sin contexto confiable devuelve null, nunca repisa', function() {
+  assert.equal(app.resolverProductoParaFotos({
+    textoActual: 'Sí',
+    respuestaClaude: 'Claro',
+    historial: [],
+    productoPersistido: null
+  }), null);
+});
+
+test('getSystemPrompt — prohíbe ofrecer fotos adicionales por iniciativa propia', function() {
+  var prompt = app.getSystemPrompt();
+  assert.ok(prompt.indexOf('NUNCA ofrezcas fotos adicionales por iniciativa propia') !== -1);
+  assert.ok(prompt.indexOf('cuando el cliente las pida explícitamente') !== -1);
 });

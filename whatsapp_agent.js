@@ -1370,6 +1370,13 @@ Luego envías este texto EXACTO:
 
 ${saludoInicial}
 
+REGLA CRÍTICA — FOTOS ADICIONALES:
+- Las dos fotos automáticas del saludo son suficientes por defecto.
+- NUNCA ofrezcas fotos adicionales por iniciativa propia ni preguntes si el cliente quiere ver más fotos solo porque la conversación avanza, confirma ciudad, espacio, uso o ubicación.
+- Solo usa [FOTOS_EXTRA] cuando el cliente las pida explícitamente.
+- Si el cliente pide un detalle específico que no está entre las fotos disponibles (otro ángulo, interior de un cajón, soportes, foto real en un espacio específico), NO uses [FOTOS_EXTRA] ni improvises con otra imagen: escala a Lili con [ESCALAR].
+- NUNCA uses fotos de otro producto como sustituto.
+
 REGLA CRÍTICA — CUANDO EL CLIENTE ENVÍA UNA IMAGEN O FOTO:
 Ahora SÍ puedes ver las imágenes que el cliente manda. Cuando recibas una imagen, analízala y decide entre estos dos casos:
 
@@ -1403,7 +1410,7 @@ NUNCA inventes información.
 
 UBICACIÓN — RESPONDE SOLA, NUNCA ESCALES ESTO:
 Si preguntan dónde están ubicados, si pueden ir a ver el producto, o algo similar, responde SIEMPRE así, sin escalar:
-"Estamos en Medellín, por el sector de Guayabal 😊 Trabajamos 100% bajo pedido — todos nuestros productos son personalizados y se hacen en el momento del pedido, no tenemos tienda física con productos exhibidos. Si quieres ver el material o el trabajo, con gusto te muestro fotos por aquí."
+"Estamos en Medellín, por el sector de Guayabal 😊 Trabajamos 100% bajo pedido — todos nuestros productos son personalizados y se hacen en el momento del pedido, no tenemos tienda física con productos exhibidos."
 Si después de esto insisten en ir personalmente o preguntan dirección exacta, ahí sí escala: "Ya le aviso a Lili para que te confirme ese detalle 😊 [ESCALAR]"
 NUNCA digas que pueden venir a ver piezas exhibidas o visitar un showroom — no existe. Solo se ofrece mostrar fotos por WhatsApp.
 
@@ -1571,7 +1578,7 @@ MANEJO DE OBJECIONES:
 "¡Claro que sí! 😊 Cuéntame una cosa: ¿hay algo puntual que quieran revisar — la medida, el espacio donde va? Así te paso cualquier detalle que necesiten para decidir tranquilos. Te cuento que ahorita tengo cupo para fabricar esta semana; si me confirmas en estos días te la alcanzo a dejar sin lista de espera 😊"
 
 "¿Cómo se instala?" (fuera de Medellín):
-"Es muy sencillo 😊 Va con soportes invisibles que se anclan a la pared, la repisa queda totalmente flotante. Si quieres te mando la foto de cómo van los soportes para que lo veas."
+"Es muy sencillo 😊 Va con soportes invisibles que se anclan a la pared y la repisa queda totalmente flotante."
 
 4. RECIBIDOR / BANCO
 - Medidas: 96 x 30 x 40 cm (incluye cojin)
@@ -1662,13 +1669,13 @@ NUNCA digas "lamentablemente", "no las tenemos en el catálogo", "no manejamos e
 
 PARA LA CAMA:
 - Primer mensaje: presentar ambas opciones SIN precio
-- Preguntar tamano y si quiere ver fotos
+- Preguntar tamaño, sin ofrecer fotos por iniciativa propia
 - Si pide fotos: "Claro! Ya le aviso a Lili para que te mande las fotos 😊 [ESCALAR]"
 - Dar precio solo despues de confirmar tamano Queen
 
 CUANDO ESCALAR (respuestas naturales y cálidas. Como Olivia es del equipo, SÍ puede referirse a Lili con naturalidad, ej: "ya le aviso a Lili"):
 - CLIENTE PIDE HABLAR CON UNA PERSONA O ASESOR: Si el cliente dice cosas como "quiero hablar con un asesor", "quiero hablar con una persona", "con un humano", "con alguien real", "con Lili", "me pueden llamar", "necesito hablar con alguien", o muestra frustración con tus respuestas, escala de inmediato con calidez: "¡Claro! Ya le aviso a Lili para que te atienda personalmente 😊 En un momentico te escribe. [ESCALAR]"
-- Fotos de la REPISA (cómo es, cómo queda, cómo se ve): el sistema las envía automáticamente. Debes responder EXACTAMENTE así, sin cambiar nada: "¡Claro! Aquí te muestro cómo queda 😊 [FOTOS_EXTRA]" — el tag [FOTOS_EXTRA] es OBLIGATORIO, sin él las fotos no se envían. NUNCA escribas esta respuesta sin el tag.
+- Fotos de la REPISA (cómo es, cómo queda, cómo se ve), SOLO cuando el cliente las pide explícitamente: el sistema las envía automáticamente. Debes responder EXACTAMENTE así, sin cambiar nada: "¡Claro! Aquí te muestro cómo queda 😊 [FOTOS_EXTRA]" — el tag [FOTOS_EXTRA] es OBLIGATORIO, sin él las fotos no se envían. NUNCA escribas esta respuesta sin el tag y NUNCA ofrezcas tú primero enviar fotos.
 - Fotos de REFERENCIA o ESTILO (para elegir diseño, estilo, color): "Claro! Ya le aviso a Lili para que te pase algunas opciones de referencia y elijas el estilo 😊 [ESCALAR]"
 - Medidas no estandar: "Perfecto! Ya le aviso a Lili para que revise las medidas y te confirme el valor 😊 [ESCALAR]"${notaRedireccionV2Profundidad}
 - Diseno personalizado: "Claro! Ya le aviso a Lili para que te pase opciones de referencia 😊 [ESCALAR]"
@@ -3413,8 +3420,20 @@ function procesarMensaje(from, texto, leadId, referralData) {
       })
     : Promise.resolve(null);
 
-  promesaFormulario.then(function(formularioVinculado) {
+  var promesaProductoPersistido = leadId
+    ? obtenerProductoPersistidoLead(leadId).catch(function(e) {
+        console.error('Error buscando producto activo para lead ' + leadId + ':', e.message);
+        return null;
+      })
+    : Promise.resolve(null);
+
+  Promise.all([promesaFormulario, promesaProductoPersistido]).then(function(contextosLead) {
+  var formularioVinculado = contextosLead[0];
+  var productoPersistido = contextosLead[1];
   var bloqueFormulario = formularioVinculado ? formatearRespuestasFormulario(formularioVinculado) : null;
+  var productoFormularioParaFotos = formularioVinculado
+    ? detectarProductoFormulario(formularioVinculado.field_data || [])
+    : null;
   if (bloqueFormulario) {
     esPrimerMensaje = true; // asegura el envío de fotos también para leads de formulario
     console.log('📋 Contexto de formulario aplicado al primer mensaje de ' + from);
@@ -3429,8 +3448,9 @@ function procesarMensaje(from, texto, leadId, referralData) {
   // esPrimerMensaje a true (fotos también aquí, mismo criterio aprobado).
   // ═══════════════════════════════════════════════════════════════════════
   var bloqueReferral = null;
+  var productoReferral = null;
   if (!bloqueFormulario && sinRespuestasAgente && !mencionaRepisa && !mencionaOtroMueble && referralData) {
-    var productoReferral = detectarProductoDesdeReferral(referralData);
+    productoReferral = detectarProductoDesdeReferral(referralData);
     bloqueReferral = formatearContextoReferral(referralData, productoReferral);
     if (bloqueReferral) {
       esPrimerMensaje = true;
@@ -3535,18 +3555,21 @@ function procesarMensaje(from, texto, leadId, referralData) {
       console.log('💲🔍 Claude escaló con [ESCALAR] y no hay cotización segura detectable por contexto para ' + from + ' — se respeta el escalamiento');
     }
 
+    // El catálogo actual solo tiene fotos generales por producto, sin medios
+    // etiquetados por detalle. Una petición específica se escala de forma
+    // determinística: nunca se sustituye por la foto "más parecida".
+    if (solicitudFotoDetalleEspecifico(texto) && respuesta.indexOf('[ESCALAR]') === -1) {
+      respuesta = 'Para mostrarte justo ese detalle, ya le aviso a Lili para que revise si tenemos esa foto y te la envíe 😊 [ESCALAR]';
+    }
+
     agregarMensaje(from, 'assistant', respuesta);
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
-    var necesitaFotosExtra = respuesta.indexOf('[FOTOS_EXTRA]') !== -1;
-    if (!necesitaFotosExtra && !necesitaEscalar) {
-      var textoLead = texto.toLowerCase();
-      var pideFotos = textoLead.indexOf('foto') !== -1 || textoLead.indexOf('imagen') !== -1 ||
-                      textoLead.indexOf('como queda') !== -1 || textoLead.indexOf('cómo queda') !== -1 ||
-                      textoLead.indexOf('como se ve') !== -1 || textoLead.indexOf('cómo se ve') !== -1 ||
-                      textoLead.indexOf('muéstrame') !== -1 || textoLead.indexOf('muestrame') !== -1 ||
-                      textoLead.indexOf('ver la repisa') !== -1;
-      if (pideFotos) necesitaFotosExtra = true;
+    var claudePidioFotosExtra = respuesta.indexOf('[FOTOS_EXTRA]') !== -1;
+    var clientePidioFotos = solicitudExplicitaFotos(texto, conversaciones[from]);
+    var necesitaFotosExtra = !necesitaEscalar && clientePidioFotos;
+    if (claudePidioFotosExtra && !clientePidioFotos) {
+      console.log('📸⛔ [FOTOS_EXTRA] ignorado para ' + from + ' — el cliente no pidió fotos explícitamente');
     }
     var textoLimpio = respuesta.replace(/\[ESCALAR\]/g, '').replace(/\[FOTOS_EXTRA\]/g, '').trim();
 
@@ -3561,13 +3584,18 @@ function procesarMensaje(from, texto, leadId, referralData) {
       }
     }
 
-    if (esPrimerMensaje || necesitaFotosExtra) {
-      // 🆕 FASE 3 (26 jul) — fotos por producto: detecta de qué producto se
-      // está hablando (mensaje del cliente + respuesta de Claude, que suele
-      // nombrar el producto explícitamente) para no enviar siempre las
-      // mismas fotos de repisa. Si no se puede determinar con certeza, cae
-      // al fallback (Repisa Flotante, producto ancla de la campaña).
-      var productoParaFotos = detectarProductoParaFotos([texto, respuesta]) || PRODUCTO_FOTOS_FALLBACK;
+    // Se resuelve y persiste en TODOS los turnos, no solo cuando ya se van a
+    // enviar fotos. Así un "Sí" posterior y un reinicio del proceso conservan
+    // el producto activo establecido durante la conversación.
+    var productoParaFotos = resolverProductoParaFotos({
+      textoActual: texto,
+      respuestaClaude: respuesta,
+      historial: conversaciones[from],
+      productoContextoOrigen: productoFormularioParaFotos || productoReferral,
+      productoPersistido: productoPersistido
+    });
+    if (productoParaFotos && leadId && productoParaFotos !== productoPersistido) {
+      guardarProductoPersistidoLead(leadId, productoParaFotos);
     }
 
     if (esPrimerMensaje) {
@@ -3579,9 +3607,13 @@ function procesarMensaje(from, texto, leadId, referralData) {
           enviarMensaje(from, textoLimpio);
           delete procesando[from];
         });
-    } else if (necesitaFotosExtra) {
+    } else if (necesitaFotosExtra && productoParaFotos) {
       enviarMensaje(from, textoLimpio);
       setTimeout(function() { enviarFotosExtra(from, productoParaFotos); }, 1500);
+      delete procesando[from];
+    } else if (necesitaFotosExtra) {
+      console.log('📸⛔ Fotos no enviadas para ' + from + ' — producto activo no resuelto con certeza');
+      enviarMensaje(from, textoLimpio);
       delete procesando[from];
     } else {
       enviarMensaje(from, textoLimpio);
@@ -3682,9 +3714,10 @@ const FOTOS_POR_PRODUCTO = {
   ]
 };
 
-// Producto ancla de la campaña — fallback cuando no se puede determinar
-// ningún producto con certeza (conversación ambigua, mezcla de productos).
-const PRODUCTO_FOTOS_FALLBACK = 'Repisa Flotante';
+// No existe fallback de producto para medios. Si el producto no se puede
+// resolver con certeza, el envío se cancela: nunca se sustituyen fotos con
+// Repisa Flotante ni con ningún otro producto.
+const PRODUCTO_FOTOS_FALLBACK = null;
 
 // Detecta el producto para elegir qué fotos enviar. Mismo patrón de
 // palabras clave que ya usa detectarProductoPorTexto() (Fase 1B/Ajuste 1
@@ -3731,6 +3764,100 @@ function detectarProductoParaFotos(textos) {
   }
 
   return null;
+}
+
+function normalizarTextoFotos(texto) {
+  return String(texto || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// El backend, no Claude, tiene la última palabra sobre si se permite enviar
+// fotos extra. Una afirmación corta ("sí") solo cuenta cuando responde a la
+// última pregunta del agente y esa pregunta hablaba explícitamente de fotos.
+function solicitudExplicitaFotos(textoActual, historial) {
+  var texto = normalizarTextoFotos(textoActual);
+  var frasesDirectas = [
+    'foto', 'imagen', 'como queda', 'como se ve', 'muestrame',
+    'mostrarme', 'verla', 'ver el producto', 'ver la repisa',
+    'mandamela', 'mandamelas', 'enviala', 'envialas'
+  ];
+  if (frasesDirectas.some(function(frase) { return texto.indexOf(frase) !== -1; })) return true;
+
+  var esAfirmacionCorta = /^(si|claro|dale|listo|bueno|por favor)[\s.!?]*$/.test(texto.trim());
+  if (!esAfirmacionCorta || !Array.isArray(historial)) return false;
+
+  for (var i = historial.length - 1; i >= 0; i--) {
+    var mensaje = historial[i];
+    if (!mensaje || mensaje.role !== 'assistant' || typeof mensaje.content !== 'string') continue;
+    var preguntaAnterior = normalizarTextoFotos(mensaje.content);
+    return preguntaAnterior.indexOf('foto') !== -1 || preguntaAnterior.indexOf('imagen') !== -1;
+  }
+  return false;
+}
+
+function solicitudFotoDetalleEspecifico(textoActual) {
+  var texto = normalizarTextoFotos(textoActual);
+  var detalles = [
+    'por dentro', 'interior', 'otro angulo', 'otro ángulo', 'de cerca',
+    'close up', 'detalle', 'cajon', 'soporte', 'herrajes', 'parte de atras',
+    'parte trasera', 'foto real', 'en una sala', 'en una habitacion'
+  ];
+  return detalles.some(function(detalle) {
+    return texto.indexOf(normalizarTextoFotos(detalle)) !== -1;
+  });
+}
+
+function resolverProductoParaFotos(opciones) {
+  opciones = opciones || {};
+
+  // Un cambio explícito del cliente en el turno actual siempre gana.
+  var productoActual = detectarProductoParaFotos([opciones.textoActual]);
+  if (productoActual) return productoActual;
+
+  // En saludos genéricos ("Quiero más información"), el producto confiable
+  // puede venir únicamente del formulario/referral del anuncio.
+  if (opciones.productoContextoOrigen && FOTOS_POR_PRODUCTO[opciones.productoContextoOrigen]) {
+    return opciones.productoContextoOrigen;
+  }
+
+  // La columna leads.product conserva el producto incluso tras reinicios.
+  if (opciones.productoPersistido && FOTOS_POR_PRODUCTO[opciones.productoPersistido]) {
+    return opciones.productoPersistido;
+  }
+
+  // Respaldo para conversaciones existentes que todavía no tenían product
+  // poblado: buscar desde el mensaje más reciente hacia atrás.
+  var historial = Array.isArray(opciones.historial) ? opciones.historial : [];
+  for (var i = historial.length - 1; i >= 0; i--) {
+    var contenido = historial[i] && historial[i].content;
+    if (typeof contenido !== 'string') continue;
+    var productoHistorial = detectarProductoParaFotos([contenido]);
+    if (productoHistorial) return productoHistorial;
+  }
+
+  // Útil en el primer turno cuando la respuesta de Claude nombra claramente
+  // el producto identificado desde referral/formulario.
+  var productoRespuesta = detectarProductoParaFotos([opciones.respuestaClaude]);
+  return productoRespuesta || null;
+}
+
+async function obtenerProductoPersistidoLead(leadId) {
+  if (!leadId) return null;
+  var r = await pool.query('SELECT product FROM leads WHERE id = $1', [leadId]);
+  return r.rows[0] && r.rows[0].product ? r.rows[0].product : null;
+}
+
+function guardarProductoPersistidoLead(leadId, producto) {
+  if (!leadId || !FOTOS_POR_PRODUCTO[producto]) return Promise.resolve(false);
+  return pool.query(
+    'UPDATE leads SET product = $2, updated_at = NOW() WHERE id = $1',
+    [leadId, producto]
+  ).then(function() {
+    console.log('📸 Producto activo guardado para lead ' + leadId + ': ' + producto);
+    return true;
+  }).catch(function(e) {
+    console.error('Error guardando producto activo para lead ' + leadId + ':', e.message);
+    return false;
+  });
 }
 
 // ─── SUBIDA DE ARCHIVOS DESDE EL PANEL (Cloudinary) ────────────────────────
@@ -3782,11 +3909,10 @@ function enviarImagen(to, urlFoto, caption) {
   });
 }
 
-// 🆕 FASE 3 (26 jul) — devuelve el set de fotos del producto detectado,
-// con el mismo fallback (Repisa Flotante) si el producto no vino o no
-// existe en el mapa.
+// Devuelve fotos únicamente cuando el producto existe en el catálogo.
+// Producto desconocido/null devuelve []: nunca hay sustitución silenciosa.
 function fotosParaProducto(producto) {
-  return FOTOS_POR_PRODUCTO[producto] || FOTOS_POR_PRODUCTO[PRODUCTO_FOTOS_FALLBACK];
+  return FOTOS_POR_PRODUCTO[producto] || [];
 }
 
 // Puras y testeables sin red (mismo criterio que extraerTagCotizarRepisa):
@@ -3804,6 +3930,7 @@ function seleccionarFotosExtra(fotos) {
 
 function enviarFotosSaludo(to, producto) {
   var par = seleccionarFotosSaludo(fotosParaProducto(producto));
+  if (!par[0]) return Promise.resolve(false);
   return enviarImagen(to, par[0])
     .then(function() {
       return new Promise(function(resolve) { setTimeout(resolve, 1500); });
@@ -3815,6 +3942,7 @@ function enviarFotosSaludo(to, producto) {
 
 function enviarFotosExtra(to, producto) {
   var par = seleccionarFotosExtra(fotosParaProducto(producto));
+  if (!par[0]) return Promise.resolve(false);
   return enviarImagen(to, par[0])
     .then(function() {
       return new Promise(function(resolve) { setTimeout(resolve, 1500); });
@@ -3939,6 +4067,11 @@ app.quitarTagCotizarRepisa = quitarTagCotizarRepisa;
 app.detectarProductoParaFotos = detectarProductoParaFotos;
 app.FOTOS_POR_PRODUCTO = FOTOS_POR_PRODUCTO;
 app.PRODUCTO_FOTOS_FALLBACK = PRODUCTO_FOTOS_FALLBACK;
+app.solicitudExplicitaFotos = solicitudExplicitaFotos;
+app.solicitudFotoDetalleEspecifico = solicitudFotoDetalleEspecifico;
+app.resolverProductoParaFotos = resolverProductoParaFotos;
+app.obtenerProductoPersistidoLead = obtenerProductoPersistidoLead;
+app.guardarProductoPersistidoLead = guardarProductoPersistidoLead;
 app.fotosParaProducto = fotosParaProducto;
 app.seleccionarFotosSaludo = seleccionarFotosSaludo;
 app.seleccionarFotosExtra = seleccionarFotosExtra;

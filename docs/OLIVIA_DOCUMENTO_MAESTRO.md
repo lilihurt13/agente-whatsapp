@@ -1,6 +1,6 @@
 # DOCUMENTO MAESTRO — Proyecto Olivia (Hecho por Lili)
 
-**Última actualización:** 27 de julio de 2026
+**Última actualización:** 28 de julio de 2026
 **Propósito de este documento:** ser el punto de partida para CUALQUIER asistente de IA nuevo (Claude Code, ChatGPT Codex, o cualquier otro) que retome este proyecto. Si estás retomando el trabajo en una sesión nueva o con una herramienta distinta, pega este documento completo al inicio antes de pedir cualquier cambio. Súbelo también a `docs/OLIVIA_DOCUMENTO_MAESTRO.md` en el repositorio para que quede accesible desde GitHub, no solo en un chat de Claude.
 
 ---
@@ -121,8 +121,33 @@ Al activar el flag, Olivia no preguntaba profundidad para medidas fuera de 15cm 
 
 ## 6. BUGS ABIERTOS SIN RESOLVER (27 julio)
 
-### 6.1 Fotos enviadas sin que el cliente las pida
-Lead de Mesa Auxiliar recibió fotos correctas en el saludo, pero en mensaje posterior ("para sala", sin pedir fotos) Olivia disparó `[FOTOS_EXTRA]` con fotos equivocadas (Repisa). Regla confirmada: 2 fotos del saludo son suficientes por defecto; no enviar más solo porque la conversación avanza — solo si el cliente pide explícitamente, o si falta un detalle específico (ahí escalar, nunca enviar foto sustituta). Pendiente: diagnóstico con historial real.
+### 6.1 Fotos enviadas sin que el cliente las pida — CORREGIDO EN RAMA, PENDIENTE DE DESPLIEGUE (28 julio)
+Historial real identificado: lead `573104596410`. Después de establecer Mesa Auxiliar, el cliente respondió `"Sala"`. Olivia ofreció fotos por iniciativa propia (`"¿Te gustaría verla en fotos...?"`), el cliente contestó `"Si"` y entonces Olivia disparó `[FOTOS_EXTRA]` con fotos equivocadas de Repisa.
+
+El diagnóstico en `feature/fix-fotos-contexto-conversacion` confirmó dos causas independientes:
+- el backend acepta `[FOTOS_EXTRA]` emitido por Claude sin exigir que el cliente haya pedido fotos explícitamente;
+- para cada envío recalcula el producto solo con `[texto_del_turno, respuesta_Claude]`, sin historial ni producto persistido, y si no encuentra el producto fuerza `Repisa Flotante` como fallback.
+
+Precisión tras recibir el historial: las fotos no se enviaron directamente al
+decir `"Sala"`; Olivia indujo la solicitud ofreciéndolas sin necesidad. El
+fallo de contexto ocurrió en el turno siguiente, porque `"Si"` y la respuesta
+breve no nombraban Mesa Auxiliar.
+
+También se confirmó que Mesa Auxiliar solo tiene las dos fotos del saludo y `seleccionarFotosExtra()` actualmente las repite. Regla de negocio: no repetirlas automáticamente ni sustituir con otro producto; ante un detalle específico inexistente, escalar.
+
+Implementación terminada en `feature/fix-fotos-contexto-conversacion`:
+- el prompt prohíbe que Olivia ofrezca fotos adicionales por iniciativa propia;
+- el backend exige solicitud explícita y puede ignorar `[FOTOS_EXTRA]` improcedente;
+- respuestas como `"Sí"` solo cuentan si responden a una pregunta anterior sobre fotos;
+- el producto activo se conserva en la columna existente `leads.product` y usa historial como respaldo;
+- se eliminó el fallback a Repisa Flotante: producto ambiguo significa no enviar;
+- solicitudes de detalles no disponibles escalan a Lili sin imágenes sustitutas.
+- los saludos genéricos identificados por anuncio/formulario pasan ese producto
+  directamente al selector de fotos; no dependen de que la respuesta visible
+  repita el nombre del mueble. Esto cubre el segundo caso real
+  `573207629644` (texto correcto de Mesa Auxiliar, foto de otro producto).
+
+Verificación: **159 pruebas aprobadas, 0 fallidas**, sintaxis válida. Aún no se ha hecho commit, push a `main` ni despliegue. Informe completo: `docs/DIAGNOSTICO_FOTOS_CONTEXTO_CONVERSACION.md`.
 
 ### 6.2 El formulario de Lead Ads parece no aportar nada
 Sospecha de Lili: Olivia no está usando datos de formulario (ciudad, versión) en conversaciones reales. Pendiente: contar `lead_form_submissions` VINCULADO vs PENDIENTE, y revisar si Olivia usa los vinculados o los ignora.
