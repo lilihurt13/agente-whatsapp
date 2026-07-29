@@ -1,0 +1,50 @@
+name: Verificar documentación de Olivia
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  documento-maestro:
+    name: Documento maestro actualizado
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar cambios funcionales
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -eu
+
+          changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          echo "Archivos modificados:"
+          echo "$changed_files"
+
+          relevant_pattern='^(whatsapp_agent\.js|package\.json|package-lock\.json|Procfile|\.env\.example|data/|scripts/|test/)'
+
+          if ! echo "$changed_files" | grep -Eq "$relevant_pattern"; then
+            echo "No hay cambios funcionales críticos; no se exige actualizar el documento maestro."
+            exit 0
+          fi
+
+          if echo "$changed_files" | grep -Fxq 'docs/OLIVIA_DOCUMENTO_MAESTRO.md'; then
+            echo "Documento maestro actualizado junto con los cambios funcionales."
+            exit 0
+          fi
+
+          echo "::error::Este pull request modifica código, datos, scripts o pruebas de Olivia, pero no actualiza docs/OLIVIA_DOCUMENTO_MAESTRO.md."
+          echo "Actualiza el documento maestro en este mismo pull request antes de integrar a main."
+          exit 1

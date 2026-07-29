@@ -1,6 +1,6 @@
 # DOCUMENTO MAESTRO — Proyecto Olivia (Hecho por Lili)
 
-**Última actualización:** 28 de julio de 2026
+**Última actualización:** 29 de julio de 2026
 **Propósito de este documento:** ser el punto de partida para CUALQUIER asistente de IA nuevo (Claude Code, ChatGPT Codex, o cualquier otro) que retome este proyecto. Si estás retomando el trabajo en una sesión nueva o con una herramienta distinta, pega este documento completo al inicio antes de pedir cualquier cambio. Súbelo también a `docs/OLIVIA_DOCUMENTO_MAESTRO.md` en el repositorio para que quede accesible desde GitHub, no solo en un chat de Claude.
 
 ---
@@ -41,10 +41,19 @@ El objetivo es que, sin importar qué herramienta de IA se use en el futuro, o s
 - **Hosting:** Railway — **auto-deploy SOLO desde push a `main`**, ninguna otra rama
 
 ### 2.2 Flujo de trabajo para hacer cambios
+0. Toda herramienta debe leer primero `AGENTS.md`. Claude Code además recibe
+   la misma entrada mediante `CLAUDE.md`. Ambos archivos obligan a leer este
+   documento maestro y `docs/PENDIENTES.md` antes de trabajar.
 1. Lili abre Claude Code en su computador (`~/Documents/agente-whatsapp`), ejecuta `claude`
 2. Trabajo por fases: rama nueva → diagnóstico → plan aprobado por Lili (vía Claude.ai como supervisor) → código → pruebas → resumen → commit (solo en rama) → **push a main solo con autorización explícita de Lili**
 3. Railway redespliega automáticamente al detectar push a `main`
 4. **Regla de oro:** nunca commitear/pushear sin que Lili vea el resumen y las pruebas primero
+5. GitHub ejecuta `.github/workflows/verificar-documentacion.yml` en cada pull
+   request hacia `main` y en cada push directo a `main`. Si cambian código,
+   configuración, datos, scripts o pruebas sin actualizar este documento, la
+   comprobación falla y deja una alerta visible. En pull requests puede impedir
+   la integración si se configura como comprobación obligatoria; en pushes
+   directos alerta después del cambio.
 
 ### 2.3 Variables de entorno críticas (Railway → Variables, nunca en código)
 `META_API_TOKEN`, `PHONE_NUMBER_ID`, `WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ANTHROPIC_API_KEY`, `CONTROL_TOKEN`, `LILI_NUMERO`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_UPLOAD_PRESET`, `DATABASE_URL`/`DATABASE_PUBLIC_URL`, y **`COTIZADOR_REPISAS_V2_ENABLED`** (feature flag, ver sección 5).
@@ -174,6 +183,9 @@ Sospecha de Lili: Olivia no está usando datos de formulario (ciudad, versión) 
 5. Reglas de texto pueden solaparse — mejor auto-limitar cada bloque a su escenario que declarar "prioridad" abstracta
 6. Nunca dejar que el modelo calcule aritmética de precios en texto — siempre JS determinístico
 7. Palabras clave de detección deben ser frases específicas, no palabras sueltas genéricas
+8. Una regla dentro del documento maestro no garantiza que una IA lo abra:
+   también debe existir en los archivos de entrada de cada herramienta
+   (`AGENTS.md` y `CLAUDE.md`) y tener una comprobación automática en GitHub.
 
 ---
 
