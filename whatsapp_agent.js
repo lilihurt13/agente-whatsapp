@@ -1589,10 +1589,12 @@ MANEJO DE OBJECIONES:
 - Instalacion: No requiere
 
 5. MESA AUXILIAR
-- Medidas: 35 x 45 x 50 cm, patas desmontables
-- Precio: $420.000 COP
+- Opciones:
+  COMPACTA: 35 x 45 x 50 cm — $390.000 COP
+  CLÁSICA: 45 x 45 x 50 cm — $420.000 COP
+- Patas desmontables
 - Tiempo: 8 dias habiles
-- Envio: Si, a todo Colombia
+- Envio: Sí, a todo Colombia. Envío nacional disponible, con costo adicional NO incluido en el precio del mueble. NUNCA inventes ni asumas el costo de envío — cuando el cliente sea de otra ciudad, escala a Lili para que confirme el valor exacto.
 - Instalacion: No requiere
 
 6. MESA DE CENTRO CON JARDINERA
@@ -1685,7 +1687,7 @@ CUANDO ESCALAR (respuestas naturales y cálidas. Como Olivia es del equipo, SÍ 
 - Otra ciudad — DEPENDE DEL PRODUCTO:
   • REPISAS: SÍ se envía con los valores ya indicados ($35.000 para 60-100cm, $45.000 para 120-160cm). Responde el valor de envío directamente, sin escalar, salvo zonas de difícil acceso (San Andrés, Leticia, Quibdó, etc.) que sí se escalan. Recuerda: fuera de Medellín no hay instalación, el cliente la instala (es flotante con soportes).
   • ESCRITORIO FLOTANTE: se envía a todo Colombia, pero fuera de Medellín no se instala. Si preguntan, dilo claro.
-  • MESA AUXILIAR: se envía a todo Colombia (puede ir desarmada, el cliente la arma).
+  • MESA AUXILIAR: se envía a todo Colombia (puede ir desarmada, el cliente la arma). El costo del envío NO está incluido en el precio del mueble y NUNCA lo inventas ni lo asumes en $0 — confirma que sí se envía, y para el valor exacto escala: "Para tu ciudad sí llega 😊 Ya le aviso a Lili para que te confirme el valor exacto del envío. [ESCALAR]"
   • ESCRITORIO CON CAJONES, MESA DE CENTRO, CAMA: solo Medellín. Si son de otra ciudad: "Ese mueble por ahora lo manejamos en Medellín. Ya le aviso a Lili para que te confirme si hay alguna opción para tu ciudad 😊 [ESCALAR]"
 
 IMPORTANTE: [ESCALAR] es interno, el sistema lo elimina del mensaje al cliente y notifica a Lili.
@@ -3562,6 +3564,33 @@ function procesarMensaje(from, texto, leadId, referralData) {
       respuesta = 'Para mostrarte justo ese detalle, ya le aviso a Lili para que revise si tenemos esa foto y te la envíe 😊 [ESCALAR]';
     }
 
+    // Se resuelve y persiste en TODOS los turnos, no solo cuando ya se van a
+    // enviar fotos. Así un "Sí" posterior y un reinicio del proceso conservan
+    // el producto activo establecido durante la conversación. Se adelanta
+    // aquí (antes vivía después de agregarMensaje) porque el filtro de envío
+    // gratis de más abajo necesita saber el producto activo.
+    var productoParaFotos = resolverProductoParaFotos({
+      textoActual: texto,
+      respuestaClaude: respuesta,
+      historial: conversaciones[from],
+      productoContextoOrigen: productoFormularioParaFotos || productoReferral,
+      productoPersistido: productoPersistido
+    });
+    if (productoParaFotos && leadId && productoParaFotos !== productoPersistido) {
+      guardarProductoPersistidoLead(leadId, productoParaFotos);
+    }
+
+    // 🆕 FIX 3 (29 jul) — Mesa Auxiliar (y cualquier otro producto sin
+    // mecanismo propio de envío) nunca debe prometer envío gratis/incluido:
+    // el prompt ya lo prohíbe (ver getSystemPrompt()), esto es la capa dura
+    // de respaldo por si Claude lo dice de todas formas con otras palabras.
+    // Mensaje de reemplazo SIEMPRE fijo — nunca una segunda llamada a
+    // Claude, para no arriesgar que esa segunda llamada alucine también.
+    if (respuestaPrometeEnvioGratisSinAprobar(respuesta, productoParaFotos) && respuesta.indexOf('[ESCALAR]') === -1) {
+      console.log('🚚⛔ Respuesta de Claude prometía envío gratis/incluido sin aprobar (producto: ' + (productoParaFotos || 'desconocido') + ') para ' + from + ' — sustituida por escalamiento. Original: ' + respuesta.slice(0, 200));
+      respuesta = 'Para confirmarte el valor exacto del envío, ya le aviso a Lili para que te lo confirme 😊 [ESCALAR]';
+    }
+
     agregarMensaje(from, 'assistant', respuesta);
 
     var necesitaEscalar = respuesta.indexOf('[ESCALAR]') !== -1;
@@ -3582,20 +3611,6 @@ function procesarMensaje(from, texto, leadId, referralData) {
         seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
         guardarSeguimiento(from);
       }
-    }
-
-    // Se resuelve y persiste en TODOS los turnos, no solo cuando ya se van a
-    // enviar fotos. Así un "Sí" posterior y un reinicio del proceso conservan
-    // el producto activo establecido durante la conversación.
-    var productoParaFotos = resolverProductoParaFotos({
-      textoActual: texto,
-      respuestaClaude: respuesta,
-      historial: conversaciones[from],
-      productoContextoOrigen: productoFormularioParaFotos || productoReferral,
-      productoPersistido: productoPersistido
-    });
-    if (productoParaFotos && leadId && productoParaFotos !== productoPersistido) {
-      guardarProductoPersistidoLead(leadId, productoParaFotos);
     }
 
     if (esPrimerMensaje) {
@@ -3804,6 +3819,57 @@ function solicitudFotoDetalleEspecifico(textoActual) {
   return detalles.some(function(detalle) {
     return texto.indexOf(normalizarTextoFotos(detalle)) !== -1;
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 FIX 3 (29 jul) — filtro determinístico de "envío gratis/incluido" no
+// aprobado. Caso real que lo motivó: Mesa Auxiliar no tiene ningún mecanismo
+// que calcule el costo del envío nacional (a diferencia de Repisa Flotante,
+// que sí lo resuelve por tabla fija o por fórmula — ver COTIZADOR_REPISAS_V2
+// y las tarifas de repisas dentro de getSystemPrompt()). El prompt ya prohíbe
+// esto (ver "NUNCA inventes... costos de envío" y la nota de Mesa Auxiliar
+// en getSystemPrompt()) — este filtro es la capa dura de respaldo por si
+// Claude lo afirma de todas formas con otra formulación.
+//
+// Alcance (dos listas, no una condición ad-hoc, mismo criterio que el flag
+// del cotizador v2):
+// - PRODUCTOS_CON_ENVIO_GRATIS_APROBADO: productos donde SÍ está aprobado un
+//   envío gratis real. Vacía hoy — se llena solo si Lili aprueba un caso así.
+// - PRODUCTOS_CON_MANEJO_PROPIO_DE_ENVIO: productos cuyo costo de envío ya
+//   lo calcula un sistema propio, probado por separado. Hoy solo Repisa
+//   Flotante: ahí "envío incluido" es una frase legítima cuando acompaña un
+//   precio ya calculado por fórmula o tomado de la tabla fija de tarifas
+//   (ver test/cotizador-v2*.test.js) — bloquearla ahí sería un falso
+//   positivo sobre una regla que ya funciona en producción.
+//
+// El mensaje de reemplazo es SIEMPRE el mismo string fijo — nunca se genera
+// con una segunda llamada a Claude, para no arriesgar que esa segunda
+// llamada también alucine. Si Claude ya escaló por su cuenta ([ESCALAR] ya
+// presente), este filtro no se activa — se respeta ese escalamiento igual
+// que en los demás filtros de este archivo.
+// ═══════════════════════════════════════════════════════════════════════════
+var PRODUCTOS_CON_ENVIO_GRATIS_APROBADO = [];
+var PRODUCTOS_CON_MANEJO_PROPIO_DE_ENVIO = ['Repisa Flotante'];
+
+var PATRON_ENVIO = /\benv[ií]o\b|\benv[ií]a(?:mos)?\b|\bdespach\w*/i;
+var PATRON_GRATUIDAD_ENVIO = /sin\s+costo|sin\s+cargo|\bgratis\b|gratuit\w*|no\s+(?:te\s+)?cobr\w*|por\s+(?:nuestra\s+)?cuenta|no\s+(?:tiene|paga|pagas)\s+costo|\binclu(?:ye|ido|ida|yen|ía)\w*\b/i;
+var PATRON_NO_TE_PREOCUPES_POR_ENVIO = /no\s+te\s+preocupes\s+por.{0,20}(?:env[ií]o|costo)/i;
+
+function respuestaPrometeEnvioGratisSinAprobar(respuesta, producto) {
+  if (typeof respuesta !== 'string' || !respuesta) return false;
+  if (PRODUCTOS_CON_ENVIO_GRATIS_APROBADO.indexOf(producto) !== -1) return false;
+  if (PRODUCTOS_CON_MANEJO_PROPIO_DE_ENVIO.indexOf(producto) !== -1) return false;
+
+  // Evalúa oración por oración (no el mensaje completo) para que una
+  // palabra de "gratuidad" en una oración sin relación a envío (ej. un
+  // descuento "incluido en el precio") no dispare el filtro por casualidad.
+  var oraciones = respuesta.split(/[.!?\n]+/);
+  for (var i = 0; i < oraciones.length; i++) {
+    var oracion = oraciones[i];
+    if (PATRON_NO_TE_PREOCUPES_POR_ENVIO.test(oracion)) return true;
+    if (PATRON_ENVIO.test(oracion) && PATRON_GRATUIDAD_ENVIO.test(oracion)) return true;
+  }
+  return false;
 }
 
 function resolverProductoParaFotos(opciones) {
@@ -4088,5 +4154,9 @@ app.__setPoolParaPruebas = function(poolSimulado) { pool = poolSimulado; };
 app.__setLlamarClaudeParaPruebas = function(fn) { llamarClaude = fn; };
 app.getSystemPrompt = getSystemPrompt;
 app.cotizadorRepisasV2Habilitado = cotizadorRepisasV2Habilitado;
+app.respuestaPrometeEnvioGratisSinAprobar = respuestaPrometeEnvioGratisSinAprobar;
+// Solo para pruebas: permite simular un producto con envío gratis aprobado
+// sin tocar la lista real (vacía en producción salvo que Lili apruebe un caso).
+app.__setProductosConEnvioGratisAprobadoParaPruebas = function(lista) { PRODUCTOS_CON_ENVIO_GRATIS_APROBADO = lista; };
 
 module.exports = app;
