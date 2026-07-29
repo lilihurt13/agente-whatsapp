@@ -158,7 +158,21 @@ Implementación terminada en `feature/fix-fotos-contexto-conversacion`:
 
 Verificación: **159 pruebas aprobadas, 0 fallidas**, sintaxis válida. Aún no se ha hecho commit, push a `main` ni despliegue. Informe completo: `docs/DIAGNOSTICO_FOTOS_CONTEXTO_CONVERSACION.md`.
 
-### 6.2 El formulario de Lead Ads parece no aportar nada
+### 6.2 Catálogo de Mesa Auxiliar mezclado + envío nacional sin costo definido — CORREGIDO EN RAMA, PENDIENTE DE MERGE A MAIN (29 julio)
+
+Diagnóstico confirmado con `referral_data` real (ver docs/PENDIENTES.md, caso cerrado del 27 julio): el anuncio real de Mesa Auxiliar ofrece dos variantes ("Mesa auxiliar desde $390.000", Compacta/Clásica), pero el catálogo en `getSystemPrompt()` tenía una sola ficha mezclada (35×45×50cm siempre a $420.000). Además, la regla de envío nacional para Mesa Auxiliar no dejaba explícito que el costo de envío NO está incluido en el precio del mueble — riesgo real de que Olivia prometiera envío gratis a un cliente de otra ciudad.
+
+Rama `feature/fix-catalogo-mesa-envio`, tres partes:
+
+1. **Catálogo separado en dos fichas:** COMPACTA (35×45×50cm, $390.000) y CLÁSICA (45×45×50cm, $420.000), reemplazando la ficha única.
+2. **Regla de envío explícita:** tanto en la ficha del catálogo como en el bloque "Otra ciudad" del prompt — el envío nacional existe pero su costo NO está incluido, nunca se inventa/asume, siempre se escala a Lili para el valor exacto.
+3. **Filtro determinístico de respaldo (`respuestaPrometeEnvioGratisSinAprobar()`):** corre sobre la respuesta REAL de Claude (no solo confía en que siga la instrucción del prompt) antes de enviarla al cliente. Busca, oración por oración, una palabra de la familia "envío/despacho" junto con una palabra de "gratuidad/inclusión" (gratis, sin costo, no cobro, por nuestra cuenta, incluye/incluido, etc.) — nunca frases exactas completas, para cubrir variantes. Si detecta la combinación y Claude no escaló por su cuenta, sustituye la respuesta por un mensaje de escalamiento **fijo** (nunca genera el reemplazo con una segunda llamada a Claude, para no arriesgar que esa segunda llamada también alucine).
+   - **Alcance por lista blanca, no por condición ad-hoc:** `PRODUCTOS_CON_ENVIO_GRATIS_APROBADO` (vacía hoy — se llena solo si Lili aprueba un envío gratis real) y `PRODUCTOS_CON_MANEJO_PROPIO_DE_ENVIO` (hoy solo `'Repisa Flotante'`, porque ese producto ya resuelve su envío por tabla fija o por fórmula del cotizador v2, con sus propias pruebas — ahí "envío incluido" es una frase legítima que ya está en producción, y bloquearla habría sido un falso positivo).
+   - Se conecta en `procesarMensaje()` en el mismo punto donde ya vive el filtro de `solicitudFotoDetalleEspecifico()` (antes de `agregarMensaje`), con el mismo criterio: solo actúa si Claude no emitió `[ESCALAR]` por su cuenta.
+
+Pruebas: `test/fix-catalogo-mesa-envio.test.js` (7, texto del prompt) + `test/fix3-filtro-envio-gratis.test.js` (18, función del filtro + integración end-to-end) — **184/184 pruebas totales pasan, 0 fallos**. Sin commit ni push todavía — pendiente de que Lili revise el resultado de las pruebas.
+
+### 6.3 El formulario de Lead Ads parece no aportar nada
 Sospecha de Lili: Olivia no está usando datos de formulario (ciudad, versión) en conversaciones reales. Pendiente: contar `lead_form_submissions` VINCULADO vs PENDIENTE, y revisar si Olivia usa los vinculados o los ignora.
 
 ---
