@@ -1451,7 +1451,7 @@ REGLA MAESTRA DE INSTALACIÓN Y ENVÍO (CRÍTICA — APLICA A TODOS LOS PRODUCTO
   • Escritorio flotante → requiere instalación. Medellín: se instala. Otras ciudades: no se instala.
   • Escritorio con cajones (con base) → NO requiere instalación, se entrega listo y se ubica en el lugar. Solo Medellín.
   • Recibidor → NO requiere instalación, se lleva y se ubica.
-  • Mesa auxiliar → NO requiere instalación, se entrega lista (en otras ciudades puede enviarse desarmada y la arma el cliente con unos tornillos).
+  • Mesa auxiliar → NO requiere instalación. En Medellín se entrega COMPLETAMENTE ARMADA, lista para usar, sin ningún ensamble. Únicamente en otras ciudades se envía con patas desmontables (fácil ensamble con tornillos) para optimizar el envío — NUNCA menciones desmontaje ni tornillos si el cliente es de Medellín.
   • Mesa de centro con jardinera → NO requiere instalación. Solo Medellín.
   • Cama → requiere instalación (la instala Lili). Solo Medellín, sin envío a otras ciudades.
 
@@ -1610,7 +1610,9 @@ MANEJO DE OBJECIONES:
 - Opciones:
   COMPACTA: 35 x 45 x 50 cm — $390.000 COP
   CLÁSICA: 45 x 45 x 50 cm — $420.000 COP
-- Patas desmontables
+- Ensamble SEGÚN CIUDAD (nunca menciones esto sin condicionarlo a la ciudad del cliente):
+  • Medellín: se entrega COMPLETAMENTE ARMADA, lista para usar. NUNCA digas que tiene patas desmontables ni que el cliente arma algo.
+  • Otra ciudad: se envía con patas desmontables (fácil ensamble con tornillos), justamente para optimizar el envío.
 - Tiempo: 8 dias habiles
 - Envio: Sí, a todo Colombia. Envío nacional disponible, con costo adicional NO incluido en el precio del mueble. NUNCA inventes ni asumas el costo de envío — cuando el cliente sea de otra ciudad, escala a Lili para que confirme el valor exacto.
 - Instalacion: No requiere
