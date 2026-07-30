@@ -42,6 +42,24 @@ function esNumeroValido(n) {
   return typeof n === 'string' && /^\d{5,20}$/.test(n);
 }
 
+// Único lugar que decide si un mensaje entrante de WhatsApp va a ser
+// procesado por alguna de las ramas del webhook (texto saliente de Lili,
+// texto entrante, o media entrante). Antes de esto, un message.type fuera
+// de esos casos (interactive, button, contacts, location, sticker,
+// reaction, order, system, unsupported...) o un `from` que no pasara
+// esNumeroValido simplemente no encajaba en ningún `if` del webhook y se
+// perdía sin ningún log ni error — fallo real detectado con un lead real
+// (María, 29 jul 2026) cuyo mensaje nunca llegó a "🆕 Lead creado" ni a
+// "Mensaje de...". `esSaliente` se recibe ya calculado por el llamador
+// (depende de PHONE_NUMBER_ID, definido más abajo en el archivo).
+function tipoDeMensajeEsManejado(message, esSaliente) {
+  if (!message) return false;
+  if (esSaliente && message.type === 'text') return true;
+  if (message.type === 'text' && esNumeroValido(message.from)) return true;
+  if ((message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && esNumeroValido(message.from)) return true;
+  return false;
+}
+
 function tokenValido(provisto, esperado) {
   return !!esperado && provisto === esperado;
 }
@@ -3109,6 +3127,16 @@ app.post('/webhook', function(req, res) {
       var esSaliente = false;
       if (message.from && message.from === PHONE_NUMBER_ID) esSaliente = true;
 
+      // 🆕 Rastreo de fallo silencioso (29 jul) — ninguno de los `if` de tipo
+      // de mensaje de abajo tenía un `else`, así que un message.type no
+      // contemplado (interactive, button, contacts, location, sticker,
+      // reaction, order, system, unsupported...) o un `from` que no pasara
+      // esNumeroValido caían entre todas las condiciones sin loguear nada y
+      // sin lanzar ninguna excepción — el webhook terminaba en silencio
+      // total después de "📩 Webhook recibido", sin tocar el try/catch de
+      // más abajo porque nunca hubo error. Ver docs/PENDIENTES.md.
+      var tipoDeMensajeManejado = tipoDeMensajeEsManejado(message, esSaliente);
+
       if (esSaliente && message.type === 'text') {
         var leadNumero = message.to || null;
         if (leadNumero && esNumeroValido(leadNumero)) {
@@ -3242,6 +3270,23 @@ app.post('/webhook', function(req, res) {
           procesando[fromMedia] = true;
           setTimeout(function() { procesarMensaje(fromMedia, textoMedia); }, 500);
         });
+      }
+
+      // 🆕 Rastreo de fallo silencioso (29 jul) — si ningún bloque anterior
+      // marcó tipoDeMensajeManejado, el mensaje se está descartando sin
+      // guardarse en el CRM y sin que Olivia responda. Antes esto pasaba
+      // completamente inadvertido (sin log, sin excepción). Se deja
+      // constancia explícita y se avisa a Lili para no perder el lead sin
+      // aviso. No se loguea el contenido del mensaje (solo tipo/remitente/
+      // id), mismo criterio de sanitización que el resto del webhook.
+      if (!tipoDeMensajeManejado) {
+        console.error('❌ Mensaje entrante NO MANEJADO — se descartó sin guardar en el CRM. type=' +
+          (message.type || 'desconocido') + ', from=' + (message.from || 'desconocido') +
+          ', message_id=' + (message.id || 'desconocido'));
+        if (message.from && message.from !== PHONE_NUMBER_ID) {
+          notificarLili(message.from, 'Llegó un mensaje de tipo "' + (message.type || 'desconocido') +
+            '" que el sistema todavía no sabe procesar. Revísalo manualmente — no se guardó ni se respondió automáticamente.');
+        }
       }
     }
   } catch (error) {
@@ -4107,6 +4152,7 @@ app.procesando = procesando;
 app.seguimientos = seguimientos;
 app.agregarMensaje = agregarMensaje;
 app.obtenerOCrearLead = obtenerOCrearLead;
+app.tipoDeMensajeEsManejado = tipoDeMensajeEsManejado;
 app.capturarMensajeCRM = capturarMensajeCRM;
 app.capturarReferral = capturarReferral;
 app.manejarEventoLeadgen = manejarEventoLeadgen;
