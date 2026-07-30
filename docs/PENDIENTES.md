@@ -33,6 +33,52 @@ No bloquea nada del sistema actual — todos los flujos (con formulario, con
 solo referral, o sin ninguno de los dos) ya funcionan de forma segura y
 sin romperse.
 
+**🔄 ACTUALIZACIÓN (30 jul 2026) — hallazgo nuevo, más grave que el de
+arriba: el webhook de `leadgen` nunca ha llegado, ni una sola vez.**
+Lili reportó que un cliente sí llenó el formulario de Mesa Auxiliar el 26
+jul (visible como 1 resultado "Leads" en Meta Ads Manager para esa
+campaña), pero Olivia nunca se enteró. Se verificó directamente la tabla
+`lead_form_submissions` en la base de datos de producción (Railway →
+Postgres → Data): **está completamente vacía, 0 filas.**
+
+Esto descarta la hipótesis de que el problema sea de nombre de campo de
+teléfono no reconocido en `CAMPOS_TELEFONO_FORMULARIO` — si el evento
+hubiera llegado, `manejarEventoLeadgen()` ya habría insertado una fila
+(aunque fuera con `estado_vinculacion = 'FALLIDO'`). Que no exista
+ninguna fila significa que el evento webhook **nunca llegó al servidor**,
+lo cual coincide exactamente con el punto A ya anotado junto a
+`manejarEventoLeadgen()` en `whatsapp_agent.js`: falta confirmar que la
+PÁGINA específica de Facebook (`page_id = 111790491414012`, "Hecho por
+Lili") esté suscrita a la app para el campo `leadgen` — esto es
+independiente de la suscripción a nivel de app ya confirmada el 22 jul.
+
+Señal adicional (no concluyente): al consultar esa página vía la API de
+Meta Ads, devuelve `page_name: "(unknown)"` y `leadgen_tos_accepted:
+false`, lo que sugiere permisos incompletos sobre la página desde la
+integración usada para diagnosticar — consistente con, aunque no prueba
+por sí solo, que falte esa suscripción.
+
+**Pendiente de verificar/activar (requiere acceso de Lili a Graph API
+Explorer desde una computadora, con permisos de administradora de la
+página):**
+
+1. `GET /111790491414012/subscribed_apps` con un Page Access Token
+   (permisos `pages_manage_metadata` + `leads_retrieval`) — confirmar si
+   el campo `leadgen` ya aparece suscrito para esta página.
+2. Si no aparece: `POST /111790491414012/subscribed_apps?subscribed_fields=leadgen`
+   con ese mismo token para activarlo.
+3. Confirmar también que el permiso `leads_retrieval` esté concedido al
+   token que usa el servidor (`META_API_TOKEN`) — ver App Dashboard →
+   Revisión de la app → Permisos y funciones. Si este permiso falta en
+   vez del punto 1-2, el síntoma sería distinto (el webhook sí llegaría y
+   quedaría una fila con `estado_vinculacion = 'FALLIDO'` por error de
+   Graph API) — no es lo que se está viendo ahora, pero conviene
+   revisarlo de una vez ya que está en el mismo flujo.
+
+Una vez activada la suscripción, generar un lead de prueba real (llenar
+uno de los 3 formularios) y volver a revisar `lead_form_submissions` para
+confirmar que la fila aparece.
+
 ## Fase C futura — descuento por volumen en el cotizador de repisas
 
 **Decisión de negocio (26 jul 2026, durante la integración del cotizador
