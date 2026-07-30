@@ -121,3 +121,64 @@ palabras genéricas (`'versión'`, `'compacta'`, `'clásica'`) en las claves
 de Mesa Auxiliar que podían cruzarse con el copy de otros anuncios. Ese
 fix sí era necesario y quedó hecho — ver la entrada del 27 jul en el
 historial de Fase 1A/Ajustes.
+
+## Cerrado — Mesa Auxiliar ofrecía "patas desmontables para armar" incluso en Medellín
+
+**Cerrado (29 jul 2026), commit `4bd4644` en `main`, desplegado y
+confirmado por logs de Railway (arranque limpio).** Confirmado con un log
+real: Olivia le dijo a un cliente de Medellín que la mesa auxiliar llega
+con "patas desmontables para armar", cuando la regla de negocio real es
+que en Medellín la mesa **siempre** se entrega completamente armada — el
+desmontaje de patas es exclusivo de envíos a otras ciudades (facilita
+empaque/transporte).
+
+**Causa raíz:** el catálogo de `getSystemPrompt()` (sección "5. MESA
+AUXILIAR") tenía `- Patas desmontables` como un hecho plano del producto,
+sin condicionar a la ciudad del cliente. La regla maestra de
+instalación/envío (resumen por mueble) tampoco distinguía Medellín de
+otras ciudades para este punto.
+
+**Fix:** ambos lugares del prompt quedaron condicionados explícitamente:
+Medellín → "se entrega COMPLETAMENTE ARMADA... NUNCA digas que tiene
+patas desmontables ni que el cliente arma algo"; otra ciudad → "se envía
+con patas desmontables (fácil ensamble con tornillos)". Sin capa de
+código determinística que filtre la respuesta de Claude después del
+hecho (a diferencia del filtro de envío gratis, ver más abajo) — depende
+por completo de que el prompt deje la regla sin ambigüedad. 6 pruebas
+nuevas en `test/fix4-mesa-auxiliar-ensamble.test.js` verifican el
+contenido del prompt (no simulan la respuesta real de Claude, ya que un
+stub de `llamarClaude` solo devuelve lo que el propio test le programe).
+
+**Pendiente de confirmar en una conversación real:** el próximo cliente
+de Medellín que pregunte por el ensamble/instalación de la mesa auxiliar
+— confirmar que Olivia ya no menciona tornillos ni desmontaje.
+
+## Cerrado — mensajes de WhatsApp con `message.type` no contemplado se perdían en silencio total
+
+**Cerrado (29 jul 2026), commit `7a67897` en `main`, desplegado y
+confirmado por logs de Railway (arranque limpio).** Lead real (María)
+cuyo mensaje entrante nunca produjo ni "🆕 Lead creado" ni "Mensaje
+de..." en los logs, sin ningún error visible. El webhook sí recibía el
+mensaje (`📩 Webhook recibido` con `message_id` presente).
+
+**Causa raíz:** el webhook (`POST /webhook`) solo tenía ramas `if` para
+`message.type` igual a `text`, `image`, `video`, `audio` o `document` —
+sin ningún `else` de respaldo. Un tipo no contemplado (`interactive`,
+`button`, `contacts`, `location`, `sticker`, `reaction`, `order`,
+`system`, `unsupported`, etc.), o un `from` que no pasara
+`esNumeroValido()`, caía entre todas las condiciones sin loguear nada y
+sin lanzar ninguna excepción — el `catch` general del webhook nunca se
+activaba porque no había error que capturar. No fue una excepción sin
+capturar; fue un hueco de lógica sin rama de respaldo.
+
+**Fix:** se extrajo `tipoDeMensajeEsManejado(message, esSaliente)` como
+función pura que centraliza la decisión. Cuando ningún caso aplica, ahora
+se loguea explícitamente (`❌ Mensaje entrante NO MANEJADO...`, con
+`type`/`from`/`message_id`, nunca el contenido) y se notifica a Lili en
+el momento vía `notificarLili()`, igual que ya se hacía con mensajes
+fallidos de Meta. 6 pruebas nuevas en `test/webhook-tipo-mensaje.test.js`.
+
+**Pendiente:** confirmar en un lead real futuro que, si vuelve a llegar
+un `message.type` no manejado, el aviso a Lili y el log `❌` sí aparecen
+(esta vez no se pudo reproducir el payload exacto del caso de María para
+confirmar cuál tipo específico lo causó — solo se cerró el hueco general).
