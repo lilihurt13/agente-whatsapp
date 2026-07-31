@@ -174,8 +174,31 @@ Pruebas: `test/fix-catalogo-mesa-envio.test.js` (7, texto del prompt) + `test/fi
 
 **Mergeado a `main` (commit `b126f5f`, merge `40dd7e3`) y pusheado a `origin/main` el 2026-07-29. Deploy en Railway confirmado por Lili como exitoso.**
 
-### 6.3 El formulario de Lead Ads parece no aportar nada
-Sospecha de Lili: Olivia no está usando datos de formulario (ciudad, versión) en conversaciones reales. Pendiente: contar `lead_form_submissions` VINCULADO vs PENDIENTE, y revisar si Olivia usa los vinculados o los ignora.
+### 6.3 El "formulario" de Lead Ads nunca fue un Instant Form real — CORREGIDO (30 julio)
+
+Diagnóstico completo hecho el 30 jul cruzando Meta Ads Manager, Graph API Explorer, Meta Business Suite y la base de datos de producción (partiendo de la sospecha original de Lili en la entrada anterior de esta sección).
+
+**Hallazgo 1 — nunca hubo un Instant Form.** Lo que Lili había armado en la campaña `HPL | Leads WhatsApp | Muebles | Jul-Ago 2026` era un mensaje de bienvenida de WhatsApp (Click-to-WhatsApp) con preguntas escritas como texto — no un Instant Form / Lead Ads real. Por eso: la Biblioteca de Formularios de Meta estaba vacía, `lead_form_submissions` estaba vacía en producción (el evento `leadgen` nunca tenía de dónde salir), y cualquier cliente podía ignorar las preguntas y escribir texto libre porque técnicamente solo era el saludo del chat.
+
+**Hallazgo 2 — la página tampoco estaba suscrita al webhook `leadgen`.** Verificado con `GET /111790491414012/subscribed_apps` (`data: []`). Activado con `POST /111790491414012/subscribed_apps?subscribed_fields=leadgen`, usando un token de página con `pages_manage_metadata` + `leads_retrieval` (agregados al caso de uso "Captar y administrar clientes potenciales" en el Dashboard de la app). Confirmado después con el mismo GET. También se activó "Acceso a clientes potenciales" en Meta Business Suite (Configuración → Integraciones → Acceso a clientes potenciales → CRM) para `Hecho por Lili WS Agent` y, después, para la integración de Google Sheets.
+
+**Fix — campaña nueva con Instant Forms reales:** `HPL | Leads Formulario | Muebles | Agosto 2026` (prueba hasta el 15 de agosto de 2026), reemplaza la campaña de WhatsApp anterior. *Nota aparte detectada de paso, no corregida porque la campaña quedó reemplazada:* el anuncio de Mesa Auxiliar de la campaña vieja tenía cargado el mensaje de bienvenida de Escritorio Flotante — revisar si se reutiliza esa plantilla más adelante.
+
+Los 3 formularios (uno por producto) quedaron así:
+- **Tipo:** "Mayor grado de intención" (paso de confirmación) + entrega "Manual" (Meta no puede simplificar preguntas) — decisión explícita de Lili para filtrar curiosos, no maximizar volumen.
+- **Preguntas:** `Phone number` (sin renombrar — clave para que `extraerTelefonoDeFieldData()` lo reconozca) + `Full name` + preguntas de opción múltiple por producto (medida/versión, ciudad).
+- **Política de privacidad:** `https://hechoporlili.co/politica-de-privacidad`.
+- **Finalización:** acción "Chatear en WhatsApp" (+57 333 4318777), con "Iniciar conversaciones en Messenger" desactivado a propósito.
+- **IDs:** Mesa Auxiliar `1350457547215019`, Escritorio Flotante `1555694689934261`, Repisa Flotante `804661716007515`.
+- **Respaldo:** Google Sheet "HPL - Leads Formulario - Respaldo", sincronización validada de punta a punta para Escritorio Flotante (lead de prueba real, columna `phone_number` correcta). **Sin confirmar** si quedó completa para Mesa Auxiliar y Repisa — ver pendientes abajo.
+
+**Configuración del conjunto de anuncios:** "Ubicación de la conversión" = Formularios instantáneos, objetivo de rendimiento "Maximizar el número de clientes potenciales calificados", CTA "Cotizar" en los 3 anuncios, presupuesto Advantage+ $15.000 COP/día, público heredado de la campaña anterior (Medellín + Envigado, +40km), pixel de Hecho por Lili conectado.
+
+**Pendiente de verificar (no bloquea el lanzamiento, campaña ya publicada):**
+1. Prueba real de punta a punta desde un teléfono sin el WhatsApp Business de Hecho por Lili abierto — la auto-prueba de Lili desde su computador (con ese WhatsApp Web ya abierto) se mostró como conversación consigo misma y Olivia no respondió; no se pudo confirmar si es solo un artefacto de la auto-prueba. El webhook `leadgen` a nivel de página sí está confirmado activo independientemente de esto.
+2. Confirmar si la sincronización de Google Sheets quedó completa para Mesa Auxiliar y Repisa (el asistente de configuración de Meta dio error de interfaz al repetir la validación manual para esos dos; se activaron por "crear integraciones automáticamente" pero sin lead de prueba real que lo confirme).
+
+**Plan de campaña:** corre como prueba hasta el 15 de agosto de 2026. Si los resultados son buenos, se extiende; si no, se revisa de nuevo (creativos, presupuesto, segmentación) antes de seguir invirtiendo.
 
 ---
 
@@ -187,7 +210,9 @@ Sospecha de Lili: Olivia no está usando datos de formulario (ciudad, versión) 
 - Descuento por volumen (cantidad>1) — no implementado
 - Interpolación entre medidas — descartada a favor de fórmula completa
 - Panel sin paginar (~164KB por carga) — riesgo de lentitud futura
-- Revisar si Meta permite forzar "formulario primero"
+- ~~Revisar si Meta permite forzar "formulario primero"~~ — resuelto 30 jul con Instant Forms reales, ver 6.3
+- Prueba real de Instant Form → WhatsApp → Olivia desde un teléfono externo (ver 6.3)
+- Confirmar respaldo de Google Sheets para los formularios de Mesa Auxiliar y Repisa (ver 6.3)
 
 ---
 

@@ -1,6 +1,32 @@
 # Pendientes — no urgentes, revisar en sesión futura
 
-## El formulario de Lead Ads no es obligatorio de facto
+## Cerrado (30 jul 2026) — el "formulario" nunca fue un Instant Form real, campaña nueva publicada
+
+**Resuelto.** Lo que sigue abajo (esta sección completa) queda como historial del diagnóstico. El
+detalle completo de la causa raíz, el fix y la configuración final vive en
+`docs/OLIVIA_DOCUMENTO_MAESTRO.md`, sección 6.3 — no se repite aquí para no duplicar.
+
+Resumen: nunca hubo un Instant Form de Meta (era un mensaje de bienvenida de WhatsApp con
+preguntas en texto), y además la página no estaba suscrita al webhook `leadgen`. Se crearon 3
+Instant Forms reales (uno por producto) y se activó la suscripción de la página. Campaña nueva
+`HPL | Leads Formulario | Muebles | Agosto 2026` publicada el 30 jul, en prueba hasta el 15 de
+agosto de 2026.
+
+**Quedan 2 cosas por verificar (no bloquean la campaña, ya está corriendo):**
+1. Prueba real de punta a punta (Instant Form → WhatsApp → Olivia responde) desde un teléfono
+   que NO tenga abierto el WhatsApp Business de Hecho por Lili — la auto-prueba de Lili desde su
+   computador dio un falso negativo por conflicto de auto-mensaje (ver 6.3 para el detalle).
+2. Confirmar si el respaldo en Google Sheets ("HPL - Leads Formulario - Respaldo") quedó
+   sincronizado para los formularios de Mesa Auxiliar y Repisa — para Escritorio Flotante sí se
+   validó con un lead de prueba real; para los otros dos, el asistente de Meta dio un error de
+   interfaz al repetir la validación manual.
+
+Cuando se confirmen esas 2 cosas (o si la campaña ya trae leads reales que las confirman solas),
+esta sección se puede borrar.
+
+---
+
+## Historial del diagnóstico original — El formulario de Lead Ads no es obligatorio de facto
 
 **Confirmado (23 jul 2026):** aunque las 3 preguntas de cada uno de los 3
 formularios (Repisa, Mesa Auxiliar, Escritorio) están marcadas como
