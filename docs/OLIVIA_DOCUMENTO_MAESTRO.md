@@ -1,6 +1,6 @@
 # DOCUMENTO MAESTRO — Proyecto Olivia (Hecho por Lili)
 
-**Última actualización:** 29 de julio de 2026
+**Última actualización:** 2 de agosto de 2026
 **Propósito de este documento:** ser el punto de partida para CUALQUIER asistente de IA nuevo (Claude Code, ChatGPT Codex, o cualquier otro) que retome este proyecto. Si estás retomando el trabajo en una sesión nueva o con una herramienta distinta, pega este documento completo al inicio antes de pedir cualquier cambio. Súbelo también a `docs/OLIVIA_DOCUMENTO_MAESTRO.md` en el repositorio para que quede accesible desde GitHub, no solo en un chat de Claude.
 
 ---
@@ -175,7 +175,19 @@ Pruebas: `test/fix-catalogo-mesa-envio.test.js` (7, texto del prompt) + `test/fi
 **Mergeado a `main` (commit `b126f5f`, merge `40dd7e3`) y pusheado a `origin/main` el 2026-07-29. Deploy en Railway confirmado por Lili como exitoso.**
 
 ### 6.3 El formulario de Lead Ads parece no aportar nada
-Sospecha de Lili: Olivia no está usando datos de formulario (ciudad, versión) en conversaciones reales. Pendiente: contar `lead_form_submissions` VINCULADO vs PENDIENTE, y revisar si Olivia usa los vinculados o los ignora.
+Sospecha de Lili: Olivia no está usando datos de formulario (ciudad, versión) en conversaciones reales. **Confirmado (2 ago 2026):** causa raíz identificada, no es un bug de `whatsapp_agent.js` — el permiso `leads_retrieval` de Meta sigue en Standard Access, así que la llamada a Graph API de `manejarEventoLeadgen()` falla siempre (8/8 eventos desde el 31 jul con `estado_vinculacion='FALLIDO'`). Ver detalle completo y pasos de Meta App Review en `docs/PENDIENTES.md` ("Bloqueo externo — permiso leads_retrieval").
+
+### 6.4 Incidente — `cmd=todo` en `/control` vació la tabla `pausados` completa (2 ago 2026)
+
+**Qué pasó:** se ejecutó `cmd=pausatodo` seguido de `cmd=todo` en `/control`. `cmd=todo` no solo quita la pausa global — también llama a `quitarTodosPausados()`, que hace `DELETE FROM pausados` sin condición. Efecto real: los ~126 números que estaban pausados manualmente (leads en "🔵 Atendiendo yo") quedaron sin protección — Olivia habría vuelto a responderles automáticamente.
+
+**Causa raíz de fondo:** `cmd=todo` mezcla dos cosas que deberían ser independientes — "quitar la pausa global" (`pausadoTodo=false`) y "reactivar todos los números pausados individualmente" (`quitarTodosPausados()`). Además, ninguna acción de `/control` (`pausa`, `reanudar`, `pausatodo`, `todo`, `cerrado_venta`, etc.) queda registrada en `lead_events` ni en ningún log — son completamente silenciosas, lo que hizo la reconstrucción muy difícil. **Pendiente de rediseño, no corregido todavía** — ver `docs/PENDIENTES.md`.
+
+**Reconstrucción:** no fue posible recuperar la lista completa de 126 (`lead_events` no tiene eventos de pausa; el log de arranque solo loguea el conteo, no los números; los comandos de `/control` no dejan rastro ni en logs de aplicación ni en logs HTTP — Railway no captura el query string). Se reconstruyeron 10 números con alta confianza cruzando tres señales independientes (logs de escalamiento automático desde el arranque del 30 jul, `leads.owner='LILI'`, y notas manuales) y se restauraron en `pausados` con un `INSERT ... ON CONFLICT DO NOTHING` (aprobado por Lili, ejecutado 2 ago 2026). **Quedan potencialmente ~116 números sin restaurar** — pendiente que Lili revise si Railway tiene point-in-time recovery en el plan de Postgres, o si recuerda otros números para agregar.
+
+**Mitigación desplegada — feature flag `REACTIVACION_12_19_ENABLED`:** mientras se corrige el resto del sistema de seguimiento (texto "repisa" hardcodeado sin importar el producto — ver Punto 1 del diagnóstico en `docs/PENDIENTES.md`), el cron de reactivación de 12pm/7pm (`whatsapp_agent.js`, cerca de la línea 1086) queda **apagado por defecto** — mismo patrón que `COTIZADOR_REPISAS_V2_ENABLED` (variable ausente o distinta de `'true'` = apagado). Se activa poniendo `REACTIVACION_12_19_ENABLED=true` en Railway (requiere redeploy). El cron horario de seguimiento (`esperando_info`/`esperando_decision`/`cotizacion_enviada`, otro `setInterval` distinto) y las respuestas en tiempo real de Olivia **no se tocaron** — siguen funcionando normal. Pruebas: `test/reactivacion-1219-flag.test.js` (3 casos: default apagado, valores no-`'true'` apagado, `'true'` exacto activa).
+
+**Pendiente:** implementar el resto del diseño de Fase 2 (producto real en los mensajes de seguimiento, guard síncrono de la condición de carrera, notificación a Lili que no dependa de `message.from`, etc. — diagnóstico completo y diseño en la conversación de auditoría del 2 ago, resumen en `docs/PENDIENTES.md`) antes de volver a activar `REACTIVACION_12_19_ENABLED`.
 
 ---
 

@@ -38,6 +38,21 @@ function cotizadorRepisasV2Habilitado() {
   return process.env.COTIZADOR_REPISAS_V2_ENABLED === 'true';
 }
 
+// 🆕 FEATURE FLAG (2 ago 2026) — mismo patrón exacto que
+// cotizadorRepisasV2Habilitado(): por defecto (variable ausente o distinta
+// de 'true') el cron de reactivación de 12pm/7pm (más abajo, el segundo
+// setInterval) NO envía nada — Olivia sigue respondiendo en tiempo real
+// normalmente, esto solo apaga ese cron puntual. Se activa poniendo
+// REACTIVACION_12_19_ENABLED=true en las variables de Railway (requiere
+// redeploy). Se agregó tras el incidente del 2 de agosto donde cmd=todo en
+// /control vació la tabla `pausados` — mientras se audita y corrige el
+// resto del sistema de seguimiento (texto hardcodeado de "repisa" para
+// cualquier producto, ver docs/PENDIENTES.md), este cron queda apagado por
+// defecto para no volver a mandar mensajes automáticos incorrectos.
+function reactivacion1219Habilitada() {
+  return process.env.REACTIVACION_12_19_ENABLED === 'true';
+}
+
 function esNumeroValido(n) {
   return typeof n === 'string' && /^\d{5,20}$/.test(n);
 }
@@ -1071,6 +1086,7 @@ function mensajeReactivacion(intento) {
 if (require.main === module) {
 setInterval(function() {
   if (!bdLista) return;
+  if (!reactivacion1219Habilitada()) return;
   var ahoraUTC = new Date();
   var horaColombia = (ahoraUTC.getUTCHours() - 5 + 24) % 24;
   var fechaColombia = new Date(ahoraUTC.getTime() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -4202,6 +4218,7 @@ app.__setPoolParaPruebas = function(poolSimulado) { pool = poolSimulado; };
 app.__setLlamarClaudeParaPruebas = function(fn) { llamarClaude = fn; };
 app.getSystemPrompt = getSystemPrompt;
 app.cotizadorRepisasV2Habilitado = cotizadorRepisasV2Habilitado;
+app.reactivacion1219Habilitada = reactivacion1219Habilitada;
 app.respuestaPrometeEnvioGratisSinAprobar = respuestaPrometeEnvioGratisSinAprobar;
 // Solo para pruebas: permite simular un producto con envío gratis aprobado
 // sin tocar la lista real (vacía en producción salvo que Lili apruebe un caso).

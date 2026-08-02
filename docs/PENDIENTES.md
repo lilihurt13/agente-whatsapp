@@ -182,3 +182,98 @@ fallidos de Meta. 6 pruebas nuevas en `test/webhook-tipo-mensaje.test.js`.
 un `message.type` no manejado, el aviso a Lili y el log `❌` sí aparecen
 (esta vez no se pudo reproducir el payload exacto del caso de María para
 confirmar cuál tipo específico lo causó — solo se cerró el hueco general).
+
+## Bloqueo externo — permiso `leads_retrieval` sin Advanced Access (Meta App Review)
+
+**Detectado (2 ago 2026), durante la auditoría de leads de formulario mal
+atendidos.** `manejarEventoLeadgen()` recibe correctamente el evento
+`leadgen` (webhook, ID de formulario, de anuncio, de página — confirmado
+en logs reales), pero la llamada a Graph API que trae las respuestas del
+formulario (`GET /{leadgen_id}?fields=field_data`, `whatsapp_agent.js`
+~línea 2843) falla siempre con `400 GraphMethodException code:100
+subcode:33`. **8 de 8 eventos leadgen recibidos desde el 31 de julio
+tienen `estado_vinculacion = 'FALLIDO'` en `lead_form_submissions`, sin
+ninguna excepción.**
+
+**Causa:** el token usado (`META_API_TOKEN`) no tiene el permiso
+`leads_retrieval` en Advanced Access — sigue en Standard Access, que solo
+sirve para formularios/Páginas de prueba, no para leads reales de
+clientes. Esto es 100% independiente del código: no hay ningún fix en
+`whatsapp_agent.js` que lo resuelva. El manejo de error ya está bien
+hecho (registra `FALLIDO`, loguea el error, no rompe nada más) — solo
+falta que Meta apruebe el permiso.
+
+**No bloquea el resto del trabajo.** Los bugs de código encontrados en la
+misma auditoría (fallo silencioso del webhook, condición de carrera,
+seguimiento genérico, formulario duplicado, alucinación de contenido no
+visto) son independientes de si `field_data` del formulario llega o no —
+se corrigen igual.
+
+**Acción en curso (Lili, iniciada 2 ago 2026):** trámite de Meta App
+Review para pasar `leads_retrieval` de Standard a Advanced Access. Pasos:
+
+1. Completar Meta Business Verification en el Business Manager dueño de
+   la app (si no está hecha ya — suele ser el paso que más tarda).
+2. App Dashboard → App Review → Permisos y funciones → `leads_retrieval`
+   → Solicitar Advanced Access. Junto con `leads_retrieval`, la doc
+   oficial de Meta pide también `pages_manage_ads`, `pages_read_engagement`,
+   `pages_show_list`, y `pages_manage_metadata` (por ir vía webhook, que
+   ya está configurado).
+3. Preparar el material de la solicitud (lo que más causa rechazo si
+   falta):
+   - Screencast mostrando un lead REAL de punta a punta: cliente completa
+     el formulario → llega el webhook → aparece en el sistema (no sirve
+     una pantalla de configuración vacía).
+   - Texto de caso de uso: qué campos del formulario se acceden, dónde se
+     guardan (`lead_form_submissions.field_data`), quién puede verlos.
+   - Política de privacidad que cubra explícitamente manejo/retención de
+     datos de leads.
+4. Enviar a revisión. Tiempo de aprobación no confirmado — depende de
+   Meta, revisar el estado directamente en el dashboard.
+
+**Mientras se aprueba:** se puede usar la Lead Ads Testing Tool del
+dashboard (formularios de prueba, cubiertos por Standard Access) para
+dejar todo el pipeline (webhook → Graph API → `lead_form_submissions`)
+probado de punta a punta, y de paso generar el material del screencast
+que Meta pide.
+
+## URGENTE — Rediseñar `/control` tras el incidente de `cmd=todo` (2 ago 2026)
+
+**Confirmado (2 ago 2026):** `cmd=todo` en `/control` mezcla "quitar pausa
+global" con `quitarTodosPausados()` (`DELETE FROM pausados` sin condición),
+borrando de un golpe todos los números pausados manualmente — no solo la
+pausa global. Vació ~126 filas; solo se pudieron reconstruir 10 con
+confianza razonable (cruzando logs de escalamiento desde el arranque del
+30 jul, `leads.owner='LILI'`, y `notas`) y restaurar por `INSERT` aprobado
+por Lili. El resto probablemente sigue perdido — ver
+`docs/OLIVIA_DOCUMENTO_MAESTRO.md` sección 6.4 para el detalle completo.
+
+**Causa raíz que falta corregir (no solo documentar):**
+1. `cmd=todo` debería separar "pausadoTodo=false" de "reactivar
+   individuales" — o al menos requerir una confirmación explícita distinta
+   para lo segundo, ya que son operaciones de impacto muy distinto.
+2. Ningún comando de `/control` deja rastro en `lead_events` ni en logs de
+   aplicación — son completamente silenciosos. Cualquier acción de
+   `/control` (`pausa`, `reanudar`, `pausatodo`, `todo`, `cerrado_venta`,
+   `cerrado_perdido`) debería registrar un evento (actor, número, comando,
+   timestamp) para que un incidente futuro sí se pueda reconstruir sin
+   depender de inferencias indirectas por logs.
+3. Evaluar si `pausados` necesita ON DELETE más seguro (soft-delete con
+   timestamp en vez de DELETE físico) para que un vaciado accidental sea
+   reversible sin reconstrucción manual.
+
+**Mitigación desplegada mientras se corrige lo anterior:** feature flag
+`REACTIVACION_12_19_ENABLED` (default apagado) apaga el cron de 12pm/7pm
+que le manda a cualquier lead pausado un mensaje automático de "repisa" —
+ver sección 6.4 del documento maestro. El cron horario de seguimiento y
+las respuestas en tiempo real de Olivia no se tocaron.
+
+**No cerrar este pendiente hasta:** (a) decidir y corregir el diseño de
+`cmd=todo`/`/control`, (b) confirmar con Lili si los ~116 números
+restantes se dan por perdidos o si aparece una vía de recuperación
+(point-in-time recovery de Postgres en Railway, o memoria de Lili).
+
+**Cuándo se puede cerrar este pendiente:** cuando `estado_vinculacion`
+empiece a salir `VINCULADO` (o el estado de éxito equivalente) en
+`lead_form_submissions` para un lead real nuevo — eso confirma que
+Advanced Access ya quedó activo.
