@@ -183,7 +183,14 @@ Sospecha original de Lili: Olivia no está usando datos de formulario (ciudad, v
 - **Fallback activo:** variable `PAGE_ACCESS_TOKEN` puesta a mano en Railway con un Page Access Token de larga duración ya generado (60 días, **expira aproximadamente el 2 de octubre de 2026** — hay que renovarlo antes de esa fecha o volverá a fallar en silencio). Si la derivación automática falla, `obtenerPageAccessToken()` usa este valor directamente.
 - **Verificado con lead real en producción (3 ago 2026):** `GET /{leadgen_id}` con el `pageAccessToken` resultante devolvió correctamente `field_data` y `created_time` del leadgen_id de Omaira Quintero (`2841838099548700`) — confirma que la Graph API de Lead Ads ya funciona de punta a punta con datos reales.
 
-**Pendiente (Etapa 1, en curso):** el resto del diseño de fondo de la auditoría del 2 ago — fallo silencioso del webhook si `message.from` falta (jerarquía de respaldo `from → contacts.wa_id → leadgen → alerta`), condición de carrera, seguimiento genérico, formulario duplicado. Ver `docs/PENDIENTES.md`.
+**Etapa 1 — fallo silencioso del webhook cuando `message.from` falta — COMPLETADO (3 ago 2026):**
+- Causa: si `message.from` venía vacío/corrupto (caso real: lead "Yuly"), el mensaje caía entre todas las ramas del webhook sin loguear nada útil, y la alerta a Lili que se agregó el 29 jul tampoco disparaba porque su condición dependía de `message.from` (`if (message.from && ...)`) — exactamente el caso que fallaba.
+- Fix: `resolverNumeroRemitente(message, contacts)` (nueva función pura) intenta `message.from` y, si no es válido, cae a `value.contacts[0].wa_id` (Meta suele mandarlo en el mismo payload). Se descartó a propósito un tercer nivel de respaldo vía `leadgen` — Lili lo consideró demasiado frágil para correlacionar sin número. `tipoDeMensajeEsManejado()` ahora recibe el número ya resuelto en vez de leer `message.from` directamente.
+- La alerta a Lili para mensajes no manejados ya **no depende de que `message.from` exista** — siempre se dispara (salvo eco de nuestro propio `PHONE_NUMBER_ID`), con `message_id`, `timestamp` y los nombres de campos presentes en el mensaje (nunca el contenido). Si no hay número resuelto, usa el marcador `SIN_NUMERO_IDENTIFICABLE`.
+- Pruebas: `test/webhook-tipo-mensaje.test.js` actualizado (nueva firma de 3 parámetros) + 6 pruebas nuevas de `resolverNumeroRemitente`. 205/205 pruebas totales pasan.
+- **Mergeado a `main` (commit `244ba93`, merge `8cf3f10`) y pusheado el 3 de agosto de 2026.** Pendiente de confirmar con un caso real futuro que la alerta llegue a Lili cuando falte `message.from`.
+
+**Pendiente (resto de la auditoría del 2 ago, sin empezar):** condición de carrera, seguimiento genérico, formulario duplicado. Ver `docs/PENDIENTES.md`.
 
 ### 6.4 Incidente — `cmd=todo` en `/control` vació la tabla `pausados` completa (2 ago 2026)
 
