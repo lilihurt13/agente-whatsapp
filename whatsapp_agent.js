@@ -18,6 +18,10 @@ const META_API_TOKEN = process.env.META_API_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const META_APP_SECRET = process.env.META_APP_SECRET;
+// 🆕 ETAPA 0 (3 ago) — App ID de Meta, necesario para extender el Page
+// Access Token de corta a larga duración (ver obtenerPageAccessToken()).
+// No es secreto (los App IDs de Meta son públicos), por eso el default.
+const META_APP_ID = process.env.META_APP_ID || '1413208417309453';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const CONTROL_TOKEN = process.env.CONTROL_TOKEN;
 const LILI_NUMERO = process.env.LILI_NUMERO;
@@ -107,6 +111,10 @@ const ultimaActividad = {};
 const procesando = {};
 let pausadoTodo = false;
 let bdLista = false;
+// 🆕 ETAPA 0 (3 ago) — Page Access Token derivado al arranque (ver
+// obtenerPageAccessToken()), usado solo para la Graph API de Lead Ads
+// (leads_retrieval). Nunca se usa para WhatsApp — eso sigue con META_API_TOKEN.
+let pageAccessToken = null;
 
 // Helper: agrega mensaje al historial CON timestamp
 function agregarMensaje(numero, role, contenido) {
@@ -2774,20 +2782,87 @@ function capturarReferral(lead, referralRaw, whatsappMessageId) {
 //      usando un token de página. Si esto falta, el evento webhook nunca
 //      llega — ni siquiera se vería un error, simplemente no pasaría nada.
 //
-//   B. El token usado para leer las respuestas (`GET /{leadgen_id}`, más
-//      abajo, hoy usa META_API_TOKEN) necesita el permiso `leads_retrieval`.
-//      Verificar en App Dashboard → App Review → Permisos y funciones si ya
-//      está concedido, o si hace falta pedir revisión. Si falta, el webhook
-//      SÍ llegará (evento LEAD_FORM_WEBHOOK_RECEIVED se registrará bien),
-//      pero la llamada a Graph API fallará con un error de permisos — se
-//      verá en logs como "Error consultando Graph API..." y en
-//      lead_form_submissions con estado_vinculacion = 'FALLIDO'.
+//   B. RESUELTO por ETAPA 0 (3 ago 2026, ver banner más abajo): META_API_TOKEN
+//      es un User Token y NUNCA tuvo permiso leads_retrieval sobre me/leadgen_forms
+//      ni {leadgen_id}. Confirmado a mano en Graph API Explorer que un Page
+//      Access Token (derivado de me/accounts con permiso pages_manage_ads) sí
+//      funciona. `manejarEventoLeadgen()` ahora usa `pageAccessToken` en vez
+//      de META_API_TOKEN para esta llamada.
 //
 // Recomendación antes de generar un lead de prueba con la herramienta de
-// Lead Ads Testing: confirmar A y B primero. Si no se confirman, igual se
-// puede generar el lead de prueba — el resultado en los logs/tabla dirá
-// exactamente cuál de los dos pasos falta (o si ya están completos).
+// Lead Ads Testing: confirmar A primero. Si no se confirma, igual se puede
+// generar el lead de prueba — el resultado en los logs/tabla dirá si ese
+// paso falta (o si ya está completo).
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 ETAPA 0 (3 ago 2026) — Page Access Token para la Graph API de Lead Ads.
+//
+// manejarEventoLeadgen() fallaba al leer leads porque usaba META_API_TOKEN
+// (un User Token) contra endpoints que requieren un Page Access Token con
+// permiso leads_retrieval. Confirmado a mano en Graph API Explorer: User
+// Token + pages_manage_ads → me/accounts?fields=id,name,access_token →
+// Page Access Token de "Hecho por Lili" → funciona en me/leadgen_forms y en
+// {form_id}/leads.
+//
+// obtenerPageAccessToken() deriva ese token al arranque del servidor. El
+// token corto de me/accounts dura ~1h, así que se extiende de inmediato a
+// larga duración (60 días, o indefinido si la página ya dio permisos
+// permanentes) con el flujo fb_exchange_token — requiere META_APP_SECRET
+// (ya existe en el código para verificar la firma del webhook, línea ~20;
+// confirmar que esté configurado en Railway) y META_APP_ID. Si la extensión
+// falla, se usa igual el token corto (mejor 1h que nada) con una advertencia
+// clara en logs — nunca bloquea el arranque del resto del servidor.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Intercambia un Page Access Token de corta duración (~1h, el que devuelve
+// me/accounts) por uno de larga duración (60 días o indefinido). Lanza si
+// falla — quien llama decide el fallback.
+async function extenderPageAccessToken(tokenCorto) {
+  if (!META_APP_SECRET) {
+    throw new Error('META_APP_SECRET no está configurado en las variables de entorno');
+  }
+  var resp = await axios.get('https://graph.facebook.com/v25.0/oauth/access_token', {
+    params: {
+      grant_type: 'fb_exchange_token',
+      client_id: META_APP_ID,
+      client_secret: META_APP_SECRET,
+      fb_exchange_token: tokenCorto
+    }
+  });
+  return resp.data.access_token;
+}
+
+// Deriva el Page Access Token al arranque del servidor y lo guarda en
+// `pageAccessToken` (variable de módulo). Nunca relanza el error — un fallo
+// aquí se loguea y Olivia sigue funcionando para WhatsApp de todas formas
+// (ver banner arriba).
+async function obtenerPageAccessToken() {
+  try {
+    var resp = await axios.get('https://graph.facebook.com/v25.0/me/accounts', {
+      params: { fields: 'id,name,access_token' },
+      headers: { Authorization: 'Bearer ' + META_API_TOKEN }
+    });
+    var paginas = resp.data.data || [];
+    if (paginas.length === 0) {
+      throw new Error('me/accounts no devolvió ninguna página');
+    }
+    var pagina = paginas.find(function(p) { return p.name === 'Hecho por Lili'; }) || paginas[0];
+
+    try {
+      pageAccessToken = await extenderPageAccessToken(pagina.access_token);
+      console.log('✅ Page Access Token obtenido para ' + pagina.name);
+    } catch (eExtender) {
+      pageAccessToken = pagina.access_token;
+      var detalleExtender = eExtender.response ? (eExtender.response.status + ' ' + JSON.stringify(eExtender.response.data)) : eExtender.message;
+      console.warn('⚠️ Page Token es de corta duración, expirará en ~1h — no se pudo extender a larga duración: ' + detalleExtender);
+      console.log('✅ Page Access Token obtenido para ' + pagina.name);
+    }
+  } catch (e) {
+    var detalle = e.response ? (e.response.status + ' ' + JSON.stringify(e.response.data)) : e.message;
+    console.error('❌ No se pudo obtener Page Access Token: ' + detalle);
+  }
+}
 
 const CAMPOS_TELEFONO_FORMULARIO = [
   'phone_number', 'phone', 'telefono', 'teléfono', 'whatsapp',
@@ -2852,19 +2927,19 @@ async function manejarEventoLeadgen(value) {
     metadata: { leadgen_id: leadgenId, form_id: formId, ad_id: adId, page_id: pageId }
   });
 
-  // 🚧 A partir de aquí, la llamada a Graph API FALLARÁ hasta que se agregue
-  // el producto Lead Ads en el dashboard (ver banner arriba). Se deja el
-  // manejo de error explícito para que, cuando se active, el comportamiento
-  // ya esté listo sin tocar código de nuevo.
+  // 🆕 ETAPA 0: usa pageAccessToken (derivado al arranque, ver
+  // obtenerPageAccessToken()), no META_API_TOKEN — este último es un User
+  // Token sin permiso leads_retrieval sobre este endpoint. Si la derivación
+  // falló al arrancar, pageAccessToken sigue en null y esta llamada fallará
+  // con un error de autenticación — visible en logs y en
+  // lead_form_submissions.estado_vinculacion = 'FALLIDO', igual que
+  // cualquier otro fallo de Graph API (catch de abajo).
   try {
     var resp = await axios.get(
       'https://graph.facebook.com/v21.0/' + leadgenId,
       {
         params: { fields: 'field_data' },
-        // TODO (cuando se active Lead Ads): verificar si META_API_TOKEN
-        // (token usado hoy para WhatsApp) tiene permiso leads_retrieval, o
-        // si hace falta un Page Access Token distinto para este endpoint.
-        headers: { Authorization: 'Bearer ' + META_API_TOKEN }
+        headers: { Authorization: 'Bearer ' + pageAccessToken }
       }
     );
     var fieldData = resp.data.field_data || [];
@@ -4149,6 +4224,9 @@ function enviarMensaje(to, texto) {
 // cumple `require.main === module`.
 if (require.main === module) {
   inicializarBD().then(function() {
+    // 🆕 ETAPA 0: sin await a propósito — un fallo o demora en Graph API
+    // nunca debe retrasar ni bloquear app.listen() ni el resto del servidor.
+    obtenerPageAccessToken();
     app.listen(PORT, function() {
       console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
       console.log('🔎 Verificación LILI_NUMERO: "' + LILI_NUMERO + '" (longitud: ' + (LILI_NUMERO ? LILI_NUMERO.length : 0) + ' caracteres) — compara esto con tu número real, sin +, sin espacios');
@@ -4174,6 +4252,7 @@ app.tipoDeMensajeEsManejado = tipoDeMensajeEsManejado;
 app.capturarMensajeCRM = capturarMensajeCRM;
 app.capturarReferral = capturarReferral;
 app.manejarEventoLeadgen = manejarEventoLeadgen;
+app.obtenerPageAccessToken = obtenerPageAccessToken;
 app.extraerTelefonoDeFieldData = extraerTelefonoDeFieldData;
 app.registrarEventoLead = registrarEventoLead;
 app.obtenerFormularioVinculadoReciente = obtenerFormularioVinculadoReciente;
