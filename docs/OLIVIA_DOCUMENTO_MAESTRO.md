@@ -1,6 +1,6 @@
 # DOCUMENTO MAESTRO — Proyecto Olivia (Hecho por Lili)
 
-**Última actualización:** 2 de agosto de 2026
+**Última actualización:** 3 de agosto de 2026
 **Propósito de este documento:** ser el punto de partida para CUALQUIER asistente de IA nuevo (Claude Code, ChatGPT Codex, o cualquier otro) que retome este proyecto. Si estás retomando el trabajo en una sesión nueva o con una herramienta distinta, pega este documento completo al inicio antes de pedir cualquier cambio. Súbelo también a `docs/OLIVIA_DOCUMENTO_MAESTRO.md` en el repositorio para que quede accesible desde GitHub, no solo en un chat de Claude.
 
 ---
@@ -56,7 +56,7 @@ El objetivo es que, sin importar qué herramienta de IA se use en el futuro, o s
    directos alerta después del cambio.
 
 ### 2.3 Variables de entorno críticas (Railway → Variables, nunca en código)
-`META_API_TOKEN`, `PHONE_NUMBER_ID`, `WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ANTHROPIC_API_KEY`, `CONTROL_TOKEN`, `LILI_NUMERO`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_UPLOAD_PRESET`, `DATABASE_URL`/`DATABASE_PUBLIC_URL`, y **`COTIZADOR_REPISAS_V2_ENABLED`** (feature flag, ver sección 5).
+`META_API_TOKEN`, `PHONE_NUMBER_ID`, `WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ANTHROPIC_API_KEY`, `CONTROL_TOKEN`, `LILI_NUMERO`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_UPLOAD_PRESET`, `DATABASE_URL`/`DATABASE_PUBLIC_URL`, `COTIZADOR_REPISAS_V2_ENABLED` (feature flag, ver sección 5), `META_APP_ID` (opcional, default hardcodeado — App ID de Meta, público, no secreto), y **`PAGE_ACCESS_TOKEN`** (fallback manual de la Etapa 0 de Lead Ads, ver sección 6.3 — token de página de larga duración puesto a mano, expira ~2 de octubre de 2026).
 
 **Railway NO tiene backups automáticos** — antes de cualquier migración de esquema se corre `scripts/backup_produccion.js` (exporta cada tabla a JSON).
 
@@ -174,8 +174,16 @@ Pruebas: `test/fix-catalogo-mesa-envio.test.js` (7, texto del prompt) + `test/fi
 
 **Mergeado a `main` (commit `b126f5f`, merge `40dd7e3`) y pusheado a `origin/main` el 2026-07-29. Deploy en Railway confirmado por Lili como exitoso.**
 
-### 6.3 El formulario de Lead Ads parece no aportar nada
-Sospecha de Lili: Olivia no está usando datos de formulario (ciudad, versión) en conversaciones reales. **Confirmado (2 ago 2026):** causa raíz identificada, no es un bug de `whatsapp_agent.js` — el permiso `leads_retrieval` de Meta sigue en Standard Access, así que la llamada a Graph API de `manejarEventoLeadgen()` falla siempre (8/8 eventos desde el 31 jul con `estado_vinculacion='FALLIDO'`). Ver detalle completo y pasos de Meta App Review en `docs/PENDIENTES.md` ("Bloqueo externo — permiso leads_retrieval").
+### 6.3 El formulario de Lead Ads parece no aportar nada — ETAPA 0 COMPLETADA (3 ago 2026)
+Sospecha original de Lili: Olivia no está usando datos de formulario (ciudad, versión) en conversaciones reales. **Causa raíz confirmada (2 ago 2026):** `manejarEventoLeadgen()` usaba `META_API_TOKEN` (un User Token) para leer `{leadgen_id}?fields=field_data`, pero ese endpoint necesita un **Page Access Token** con permiso `leads_retrieval` — el User Token nunca lo tuvo, sin importar el estado de Standard/Advanced Access.
+
+**Fix (Etapa 0, 3 ago 2026):**
+- `obtenerPageAccessToken()` deriva un Page Access Token al arranque llamando a `me/accounts` con `META_API_TOKEN`, y lo extiende a larga duración vía `fb_exchange_token` (necesita `META_APP_SECRET` + `META_APP_ID`).
+- **En producción, esa derivación automática falla** (`me/accounts` devuelve 0 páginas — el `META_API_TOKEN` actual no tiene permiso para listar páginas; pendiente diagnosticar por qué, ver sección 7). No bloquea nada: el fallo se loguea y el resto del servidor sigue funcionando igual (WhatsApp intacto).
+- **Fallback activo:** variable `PAGE_ACCESS_TOKEN` puesta a mano en Railway con un Page Access Token de larga duración ya generado (60 días, **expira aproximadamente el 2 de octubre de 2026** — hay que renovarlo antes de esa fecha o volverá a fallar en silencio). Si la derivación automática falla, `obtenerPageAccessToken()` usa este valor directamente.
+- **Verificado con lead real en producción (3 ago 2026):** `GET /{leadgen_id}` con el `pageAccessToken` resultante devolvió correctamente `field_data` y `created_time` del leadgen_id de Omaira Quintero (`2841838099548700`) — confirma que la Graph API de Lead Ads ya funciona de punta a punta con datos reales.
+
+**Pendiente (Etapa 1, en curso):** el resto del diseño de fondo de la auditoría del 2 ago — fallo silencioso del webhook si `message.from` falta (jerarquía de respaldo `from → contacts.wa_id → leadgen → alerta`), condición de carrera, seguimiento genérico, formulario duplicado. Ver `docs/PENDIENTES.md`.
 
 ### 6.4 Incidente — `cmd=todo` en `/control` vació la tabla `pausados` completa (2 ago 2026)
 

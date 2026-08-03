@@ -1838,31 +1838,6 @@ app.get('/modo-campana', function(req, res) {
   });
 });
 
-// 🆕 ETAPA 0 — DIAGNÓSTICO TEMPORAL (3 ago): confirma en producción que
-// pageAccessToken funciona contra la Graph API con un lead real ya conocido.
-// Solo lectura — no escribe en lead_form_submissions ni en ninguna tabla.
-// URL: /debug/test-leadgen?token=TU_TOKEN
-app.get('/debug/test-leadgen', async function(req, res) {
-  if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
-
-  var leadgenId = '2841838099548700'; // Omaira Quintero, lead real confirmado
-  try {
-    var resp = await axios.get(
-      'https://graph.facebook.com/v25.0/' + leadgenId,
-      {
-        params: { fields: 'field_data,created_time' },
-        headers: { Authorization: 'Bearer ' + pageAccessToken }
-      }
-    );
-    console.log('🧪 /debug/test-leadgen respuesta completa: ' + JSON.stringify(resp.data));
-    res.json({ ok: true, data: resp.data });
-  } catch (e) {
-    var detalle = e.response ? { status: e.response.status, data: e.response.data } : { message: e.message };
-    console.error('🧪 /debug/test-leadgen error: ' + JSON.stringify(detalle));
-    res.status(500).json({ ok: false, error: detalle });
-  }
-});
-
 app.get('/exportar-leads', async function(req, res) {
   if (!tokenValido(req.query.token, CONTROL_TOKEN)) return res.status(403).send('No autorizado');
 
