@@ -128,6 +128,30 @@ const seguimientos = {};
 const notas = {};
 const ultimaActividad = {};
 const procesando = {};
+
+// 🆕 Lock síncrono contra condición de carrera (auditoría 2 ago 2026, lead
+// real Fernando Escobar: 3 mensajes en ~7s — el guard vivía dentro del
+// .then() de capturarMensajeCRM(), es decir DESPUÉS de un round-trip async a
+// la BD, así que dos mensajes en ráfaga pasaban el guard a la vez: uno se
+// perdía en silencio, el otro disparaba un saludo genérico ignorando lo ya
+// hablado). La reclamación debe ejecutarse en el mismo tick síncrono del
+// webhook, antes de cualquier await/promesa — nunca dentro de un .then().
+// Devuelve true si el lock YA estaba tomado por OTRO mensaje de ese número
+// (quien llama no debe tocarlo al bailar); false si lo acabamos de reclamar
+// nosotros (quien llama debe liberarlo con liberarLockSiLoReclamamos() si
+// decide no seguir hasta procesarMensaje()).
+function reclamarLockProcesando(numero) {
+  var yaHabiaMensajeEnProceso = !!procesando[numero];
+  if (!yaHabiaMensajeEnProceso) procesando[numero] = true;
+  return yaHabiaMensajeEnProceso;
+}
+
+// Libera procesando[numero] SOLO si quien llama fue quien lo reclamó
+// (yaHabiaMensajeEnProceso === false) — nunca libera el lock de otro mensaje.
+function liberarLockSiLoReclamamos(numero, yaHabiaMensajeEnProceso) {
+  if (!yaHabiaMensajeEnProceso) delete procesando[numero];
+}
+
 let pausadoTodo = false;
 let bdLista = false;
 // 🆕 ETAPA 0 (3 ago) — Page Access Token derivado al arranque (ver
@@ -3294,6 +3318,19 @@ app.post('/webhook', function(req, res) {
         var from = numeroResuelto;
         var texto = message.text.body;
 
+        // 🆕 Lock síncrono contra condición de carrera (ver
+        // reclamarLockProcesando() más arriba en el archivo para el
+        // diagnóstico completo del caso real). Reclamado AQUÍ, antes de
+        // capturarMensajeCRM() — no dentro de su .then() — para que un
+        // segundo mensaje en ráfaga ya encuentre el lock tomado. Mejora
+        // inmediata aprobada por Lili; la solución completa (cola/debounce
+        // que agrupe mensajes en ráfaga y responda una sola vez) queda para
+        // la siguiente iteración — mientras tanto, un segundo mensaje en
+        // ráfaga se sigue guardando en el historial (ver dentro del .then
+        // de abajo) pero no dispara respuesta en esa pasada: comportamiento
+        // determinista y documentado, no un bug.
+        var yaHabiaMensajeEnProceso = reclamarLockProcesando(from);
+
         capturarMensajeCRM(from, {
           whatsappMessageId: message.id,
           direction: 'INBOUND',
@@ -3308,7 +3345,10 @@ app.post('/webhook', function(req, res) {
           // ejecutar IA, no se reenvía, no se reactiva seguimiento. Si hubo un
           // error de BD verificando (resultadoCRM.error), se sigue el flujo
           // normal (fail-open) para no perder el mensaje del cliente.
-          if (resultadoCRM.duplicado) return;
+          if (resultadoCRM.duplicado) {
+            liberarLockSiLoReclamamos(from, yaHabiaMensajeEnProceso);
+            return;
+          }
           if (message.referral && resultadoCRM.lead) capturarReferral(resultadoCRM.lead, message.referral, message.id);
 
           console.log('Mensaje de ' + from + ' (message_id=' + message.id + '): ' + texto);
@@ -3321,11 +3361,24 @@ app.post('/webhook', function(req, res) {
             }, 2000);
           }
 
-          if (pausadoTodo) { console.log('Pausado global (mensaje guardado, agente no responde)'); return; }
-          if (pausados[from]) { console.log('Numero pausado (mensaje guardado, agente no responde): ' + from); return; }
-          if (procesando[from]) { console.log('Ya procesando mensaje de: ' + from); return; }
+          if (pausadoTodo) {
+            console.log('Pausado global (mensaje guardado, agente no responde)');
+            liberarLockSiLoReclamamos(from, yaHabiaMensajeEnProceso);
+            return;
+          }
+          if (pausados[from]) {
+            console.log('Numero pausado (mensaje guardado, agente no responde): ' + from);
+            liberarLockSiLoReclamamos(from, yaHabiaMensajeEnProceso);
+            return;
+          }
+          if (yaHabiaMensajeEnProceso) {
+            // El lock ya estaba tomado por OTRO mensaje de este mismo número
+            // (no lo reclamamos nosotros arriba) — no lo tocamos, es de esa
+            // otra pasada. Este mensaje ya quedó guardado en el CRM/historial.
+            console.log('Ya procesando mensaje de: ' + from);
+            return;
+          }
 
-          procesando[from] = true;
           // 🆕 FASE 1B: se pasa el leadId (si lo tenemos) para que procesarMensaje
           // pueda buscar un formulario de Lead Ads vinculado reciente.
           // 🆕 AJUSTE 1 + 🐛 FIX (26 jul): se pasa referral_data combinando lo
@@ -3347,6 +3400,11 @@ app.post('/webhook', function(req, res) {
         var esVideoTipo = message.type === 'audio'; // Cloudinary guarda audio como "video"
         var textoMedia = '[El cliente envió ' + (message.type === 'image' ? 'una imagen' : message.type === 'audio' ? 'un audio' : 'un archivo') + ']';
 
+        // 🆕 Lock síncrono contra condición de carrera — misma arquitectura y
+        // mismo diagnóstico que la rama de texto entrante arriba (ver
+        // reclamarLockProcesando() para el detalle completo del caso real).
+        var yaHabiaMensajeEnProcesoMedia = reclamarLockProcesando(fromMedia);
+
         capturarMensajeCRM(fromMedia, {
           whatsappMessageId: message.id,
           direction: 'INBOUND',
@@ -3359,12 +3417,19 @@ app.post('/webhook', function(req, res) {
         }).then(function(resultadoCRM) {
           // Mismo criterio de idempotencia que el mensaje de texto: si ya
           // existía el whatsapp_message_id, no se repite descarga, IA, ni envío.
-          if (resultadoCRM.duplicado) return;
+          if (resultadoCRM.duplicado) {
+            liberarLockSiLoReclamamos(fromMedia, yaHabiaMensajeEnProcesoMedia);
+            return;
+          }
           if (message.referral && resultadoCRM.lead) capturarReferral(resultadoCRM.lead, message.referral, message.id);
 
           console.log('Mensaje tipo ' + message.type + ' de ' + fromMedia + ' (message_id=' + message.id + ') — descargando y respondiendo');
 
-          if (pausadoTodo || pausados[fromMedia] || procesando[fromMedia]) return;
+          if (pausadoTodo || pausados[fromMedia]) {
+            liberarLockSiLoReclamamos(fromMedia, yaHabiaMensajeEnProcesoMedia);
+            return;
+          }
+          if (yaHabiaMensajeEnProcesoMedia) return; // lock de OTRO mensaje de este número — no tocarlo, ya quedó guardado
 
           // Guardamos primero un marcador genérico (por si la descarga falla o tarda),
           // y lo actualizamos con la URL real en cuanto la tengamos.
@@ -3392,7 +3457,6 @@ app.post('/webhook', function(req, res) {
             });
           }
 
-          procesando[fromMedia] = true;
           setTimeout(function() { procesarMensaje(fromMedia, textoMedia); }, 500);
         });
       }
@@ -4295,6 +4359,8 @@ app.agregarMensaje = agregarMensaje;
 app.obtenerOCrearLead = obtenerOCrearLead;
 app.tipoDeMensajeEsManejado = tipoDeMensajeEsManejado;
 app.resolverNumeroRemitente = resolverNumeroRemitente;
+app.reclamarLockProcesando = reclamarLockProcesando;
+app.liberarLockSiLoReclamamos = liberarLockSiLoReclamamos;
 app.capturarMensajeCRM = capturarMensajeCRM;
 app.capturarReferral = capturarReferral;
 app.manejarEventoLeadgen = manejarEventoLeadgen;
