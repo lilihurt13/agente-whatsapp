@@ -66,6 +66,18 @@ function esNumeroValido(n) {
   return typeof n === 'string' && /^\d{5,20}$/.test(n);
 }
 
+// 🆕 ETAPA 1 (3 ago 2026) — jerarquía de resolución del número del
+// remitente. `message.from` es la fuente principal, pero Meta a veces lo
+// manda vacío/corrupto en el mismo payload donde `value.contacts[0].wa_id`
+// sí trae el número real (caso real: lead "Yuly"). Nunca inventa ni
+// adivina más allá de estas dos fuentes — si ninguna pasa esNumeroValido,
+// devuelve null y quien llama debe alertar en vez de perder el mensaje.
+function resolverNumeroRemitente(message, contacts) {
+  if (message && esNumeroValido(message.from)) return message.from;
+  if (Array.isArray(contacts) && contacts[0] && esNumeroValido(contacts[0].wa_id)) return contacts[0].wa_id;
+  return null;
+}
+
 // Único lugar que decide si un mensaje entrante de WhatsApp va a ser
 // procesado por alguna de las ramas del webhook (texto saliente de Lili,
 // texto entrante, o media entrante). Antes de esto, un message.type fuera
@@ -76,11 +88,13 @@ function esNumeroValido(n) {
 // (María, 29 jul 2026) cuyo mensaje nunca llegó a "🆕 Lead creado" ni a
 // "Mensaje de...". `esSaliente` se recibe ya calculado por el llamador
 // (depende de PHONE_NUMBER_ID, definido más abajo en el archivo).
-function tipoDeMensajeEsManejado(message, esSaliente) {
+// `numeroResuelto` viene ya calculado por resolverNumeroRemitente() —
+// evita que esta función tenga su propia noción distinta de "número válido".
+function tipoDeMensajeEsManejado(message, esSaliente, numeroResuelto) {
   if (!message) return false;
   if (esSaliente && message.type === 'text') return true;
-  if (message.type === 'text' && esNumeroValido(message.from)) return true;
-  if ((message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && esNumeroValido(message.from)) return true;
+  if (message.type === 'text' && numeroResuelto) return true;
+  if ((message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && numeroResuelto) return true;
   return false;
 }
 
@@ -3241,7 +3255,12 @@ app.post('/webhook', function(req, res) {
       // sin lanzar ninguna excepción — el webhook terminaba en silencio
       // total después de "📩 Webhook recibido", sin tocar el try/catch de
       // más abajo porque nunca hubo error. Ver docs/PENDIENTES.md.
-      var tipoDeMensajeManejado = tipoDeMensajeEsManejado(message, esSaliente);
+      //
+      // 🆕 ETAPA 1 (3 ago 2026): antes de decidir si el mensaje se maneja,
+      // se resuelve el número del remitente con la jerarquía from →
+      // contacts.wa_id (ver resolverNumeroRemitente()) — no solo message.from.
+      var numeroResuelto = resolverNumeroRemitente(message, value.contacts);
+      var tipoDeMensajeManejado = tipoDeMensajeEsManejado(message, esSaliente, numeroResuelto);
 
       if (esSaliente && message.type === 'text') {
         var leadNumero = message.to || null;
@@ -3271,8 +3290,8 @@ app.post('/webhook', function(req, res) {
         return;
       }
 
-      if (message && message.type === 'text' && esNumeroValido(message.from)) {
-        var from = message.from;
+      if (message && message.type === 'text' && numeroResuelto) {
+        var from = numeroResuelto;
         var texto = message.text.body;
 
         capturarMensajeCRM(from, {
@@ -3321,8 +3340,8 @@ app.post('/webhook', function(req, res) {
         });
       }
 
-      if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && esNumeroValido(message.from)) {
-        var fromMedia = message.from;
+      if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && numeroResuelto) {
+        var fromMedia = numeroResuelto;
         var mediaObj = message[message.type]; // message.image, message.audio, etc.
         var mediaId = mediaObj && mediaObj.id;
         var esVideoTipo = message.type === 'audio'; // Cloudinary guarda audio como "video"
@@ -3385,13 +3404,26 @@ app.post('/webhook', function(req, res) {
       // constancia explícita y se avisa a Lili para no perder el lead sin
       // aviso. No se loguea el contenido del mensaje (solo tipo/remitente/
       // id), mismo criterio de sanitización que el resto del webhook.
+      //
+      // 🆕 ETAPA 1 (3 ago 2026): antes la alerta a Lili dependía de que
+      // message.from viniera presente — exactamente el caso que este fix
+      // cubre (from vacío/corrupto). Ahora la alerta SIEMPRE se dispara
+      // cuando el mensaje no se pudo manejar (salvo que sea un eco de
+      // nuestro propio número de negocio, PHONE_NUMBER_ID), usando
+      // numeroResuelto si lo hay y, si no, un marcador explícito — nunca
+      // se vuelve a perder un lead en silencio por falta de número.
       if (!tipoDeMensajeManejado) {
         console.error('❌ Mensaje entrante NO MANEJADO — se descartó sin guardar en el CRM. type=' +
           (message.type || 'desconocido') + ', from=' + (message.from || 'desconocido') +
           ', message_id=' + (message.id || 'desconocido'));
-        if (message.from && message.from !== PHONE_NUMBER_ID) {
-          notificarLili(message.from, 'Llegó un mensaje de tipo "' + (message.type || 'desconocido') +
-            '" que el sistema todavía no sabe procesar. Revísalo manualmente — no se guardó ni se respondió automáticamente.');
+        if (message.from !== PHONE_NUMBER_ID) {
+          var camposPresentes = Object.keys(message).join(', ');
+          var motivoAlerta = 'Llegó un mensaje de tipo "' + (message.type || 'desconocido') +
+            '" que el sistema todavía no sabe procesar. message_id=' + (message.id || 'desconocido') +
+            (message.timestamp ? (', timestamp=' + message.timestamp) : '') +
+            '. Campos presentes en el mensaje: ' + camposPresentes +
+            '. Revísalo manualmente — no se guardó ni se respondió automáticamente.';
+          notificarLili(numeroResuelto || 'SIN_NUMERO_IDENTIFICABLE', motivoAlerta);
         }
       }
     }
@@ -4262,6 +4294,7 @@ app.seguimientos = seguimientos;
 app.agregarMensaje = agregarMensaje;
 app.obtenerOCrearLead = obtenerOCrearLead;
 app.tipoDeMensajeEsManejado = tipoDeMensajeEsManejado;
+app.resolverNumeroRemitente = resolverNumeroRemitente;
 app.capturarMensajeCRM = capturarMensajeCRM;
 app.capturarReferral = capturarReferral;
 app.manejarEventoLeadgen = manejarEventoLeadgen;
