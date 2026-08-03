@@ -190,7 +190,14 @@ Sospecha original de Lili: Olivia no está usando datos de formulario (ciudad, v
 - Pruebas: `test/webhook-tipo-mensaje.test.js` actualizado (nueva firma de 3 parámetros) + 6 pruebas nuevas de `resolverNumeroRemitente`. 205/205 pruebas totales pasan.
 - **Mergeado a `main` (commit `244ba93`, merge `8cf3f10`) y pusheado el 3 de agosto de 2026.** Pendiente de confirmar con un caso real futuro que la alerta llegue a Lili cuando falte `message.from`.
 
-**Pendiente (resto de la auditoría del 2 ago, sin empezar):** condición de carrera, seguimiento genérico, formulario duplicado. Ver `docs/PENDIENTES.md`.
+**Etapa 1 (cont.) — condición de carrera en mensajes en ráfaga — LOCK SÍNCRONO COMPLETADO (3 ago 2026):**
+- Causa real (lead Fernando Escobar, 573014597175, 1 ago 11:58am): 3 mensajes en ráfaga de ~7s ("Bogotá", "¿Tendrás más fotos?", "Hola buen día"). El guard `procesando[from]` se reclamaba DENTRO del `.then()` de `capturarMensajeCRM()` — después de un round-trip async a la BD — así que dos mensajes en ráfaga pasaban el guard a la vez: uno se perdía en silencio, el otro disparaba un saludo genérico ignorando lo ya hablado. Misma arquitectura de carrera en la rama de texto (`whatsapp_agent.js` ~3317-3390) y en la de media entrante (~3396-3440).
+- Fix: `reclamarLockProcesando(numero)` / `liberarLockSiLoReclamamos(numero, yaHabiaMensajeEnProceso)` (funciones puras junto a `const procesando = {};`) mueven la reclamación al mismo tick **síncrono** del webhook, antes de cualquier `await`/promesa — no dentro del `.then()`.
+- **Mejora inmediata, no la solución completa** (aprobado por Lili tras corrección de diseño de ChatGPT): el lock evita la corrupción (nunca más un saludo genérico pisando una conversación en curso), pero un segundo mensaje en ráfaga se guarda en el historial sin generar respuesta en esa pasada — comportamiento determinista, documentado, no un bug. La solución completa (cola/debounce: agrupar mensajes consecutivos del mismo número en una ventana de 2-4s y responder una sola vez a todos juntos) **queda pendiente como siguiente iteración**.
+- Pruebas: `test/lock-sincrono-condicion-carrera.test.js` (nuevo, 5 pruebas) — incluye simulación exacta del caso real de 3 mensajes en ráfaga, confirmando que solo el primero dispararía `procesarMensaje()`. 210/210 pruebas totales pasan.
+- **Mergeado a `main` (commit `4bbbb4d`, merge `46d47db`) y pusheado el 3 de agosto de 2026.**
+
+**Pendiente (resto de la auditoría del 2 ago, sin empezar):** cola/debounce de mensajes en ráfaga (siguiente iteración del punto anterior), seguimiento genérico, formulario duplicado. Ver `docs/PENDIENTES.md`.
 
 ### 6.4 Incidente — `cmd=todo` en `/control` vació la tabla `pausados` completa (2 ago 2026)
 
