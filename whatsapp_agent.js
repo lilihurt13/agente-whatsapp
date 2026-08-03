@@ -22,6 +22,11 @@ const META_APP_SECRET = process.env.META_APP_SECRET;
 // Access Token de corta a larga duración (ver obtenerPageAccessToken()).
 // No es secreto (los App IDs de Meta son públicos), por eso el default.
 const META_APP_ID = process.env.META_APP_ID || '1413208417309453';
+// 🆕 ETAPA 0 — FIX RÁPIDO (3 ago) — fallback manual si META_API_TOKEN no
+// tiene permiso para listar páginas (me/accounts devuelve 0 páginas). Se
+// pone a mano en Railway un Page Access Token ya generado — ver
+// obtenerPageAccessToken() para el orden de intentos.
+const PAGE_ACCESS_TOKEN_ENV = process.env.PAGE_ACCESS_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const CONTROL_TOKEN = process.env.CONTROL_TOKEN;
 const LILI_NUMERO = process.env.LILI_NUMERO;
@@ -2861,6 +2866,14 @@ async function obtenerPageAccessToken() {
   } catch (e) {
     var detalle = e.response ? (e.response.status + ' ' + JSON.stringify(e.response.data)) : e.message;
     console.error('❌ No se pudo obtener Page Access Token: ' + detalle);
+
+    // 🆕 FIX RÁPIDO (3 ago): si la derivación automática falla (ej.
+    // META_API_TOKEN sin permiso para listar páginas), usar un Page Access
+    // Token puesto a mano en Railway como fallback, sin tocar META_API_TOKEN.
+    if (PAGE_ACCESS_TOKEN_ENV) {
+      pageAccessToken = PAGE_ACCESS_TOKEN_ENV;
+      console.log('📋 Usando PAGE_ACCESS_TOKEN de variable de entorno (no derivado)');
+    }
   }
 }
 
