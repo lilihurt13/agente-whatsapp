@@ -197,7 +197,14 @@ Sospecha original de Lili: Olivia no está usando datos de formulario (ciudad, v
 - Pruebas: `test/lock-sincrono-condicion-carrera.test.js` (nuevo, 5 pruebas) — incluye simulación exacta del caso real de 3 mensajes en ráfaga, confirmando que solo el primero dispararía `procesarMensaje()`. 210/210 pruebas totales pasan.
 - **Mergeado a `main` (commit `4bbbb4d`, merge `46d47db`) y pusheado el 3 de agosto de 2026.**
 
-**Pendiente (resto de la auditoría del 2 ago, sin empezar):** cola/debounce de mensajes en ráfaga (siguiente iteración del punto anterior), seguimiento genérico, formulario duplicado. Ver `docs/PENDIENTES.md`.
+**Etapa 1 (cont.) — seguimiento consciente del producto — COMPLETADO (3 ago 2026):**
+- Causa: `seguimientos[numero]` nunca guardaba el producto real del lead — todos los mensajes de seguimiento (cron horario, cron de reactivación 12pm/7pm, `getMensajeSeguimiento()`, `mensajeReactivacion()`) tenían "repisa" hardcodeado, heredado de cuando Repisa Flotante era el único producto.
+- Fix: columna `seguimientos.producto` (persistida), `activarSeguimiento(numero, estado, producto)` (nunca pierde ni inventa — conserva el producto ya conocido si no se pasa uno nuevo), y los 3 sitios que escriben `seguimientos[from]` directamente ahora resuelven el producto con la misma jerarquía que ya usa `resolverProductoParaFotos()` para las fotos (formulario → confirmado por cliente → referral → producto activo persistido → neutro). `getMensajeSeguimiento()`/`mensajeReactivacion()` arman la frase con artículo/nombre/pronombre correctos por producto (`INFO_PRODUCTO_SEGUIMIENTO`); sin producto identificado usan frase neutra ("tu pedido") — **nunca "repisa" como fallback**. Verificado que con `producto='Repisa Flotante'` el texto es byte-idéntico al hardcodeado anterior (cero cambio para el único producto ya en producción).
+- **Decisión abierta que tomé y quedó pendiente de confirmar con Lili:** la plantilla de WhatsApp `seguimiento_repisa` (usada fuera de la ventana de 24h) tiene el texto de repisa fijo, sin variable, aprobado por Meta solo para ese producto — no se puede reusar para Mesa Auxiliar/Escritorio. Como no existe hoy una plantilla genérica, el cron horario ahora **notifica a Lili por Telegram para seguimiento manual** cuando `seg.producto` no es `'Repisa Flotante'`, en vez de mandar el producto equivocado o fallar en silencio. Si Lili ya tiene o crea una plantilla genérica aprobada en Meta, falta conectar su nombre exacto aquí.
+- Pruebas: `test/seguimiento-producto.test.js` (nuevo, 12 pruebas). 222/222 pruebas totales pasan.
+- **Mergeado a `main` (commit `231ee3e`, merge `7b2ec4f`) y pusheado el 3 de agosto de 2026.**
+
+**Pendiente (resto de la auditoría del 2 ago):** cola/debounce de mensajes en ráfaga (siguiente iteración del lock síncrono), formulario duplicado, y crear/conectar una plantilla de WhatsApp genérica en Meta para que el seguimiento automático fuera de 24h también funcione para Mesa Auxiliar/Escritorio (hoy notifica a Lili en su lugar). Ver `docs/PENDIENTES.md`.
 
 ### 6.4 Incidente — `cmd=todo` en `/control` vació la tabla `pausados` completa (2 ago 2026)
 
