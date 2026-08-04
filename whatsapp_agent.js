@@ -1047,6 +1047,29 @@ function leadPrometioInfo(texto) {
   return false;
 }
 
+// 🆕 Deduplicación determinística de formulario repetido (auditoría 2 ago
+// 2026, caso real Deissy): un reenvío técnico del mismo texto (mismo
+// número, mismo contenido) hacía que Olivia lo tratara como mensaje nuevo y
+// repitiera el saludo. Compara SOLO contra el último mensaje 'user' guardado
+// (no contra todo el historial) — si el texto es idéntico Y ya hay una
+// respuesta 'assistant' después de ese mensaje anterior, es un reenvío ya
+// respondido. `historial` debe incluir el mensaje actual como último
+// elemento (agregarMensaje() ya lo agregó antes de llamar a
+// procesarMensaje()) — se busca hacia atrás SIN contarlo.
+function detectarMensajeDuplicado(historial, textoActual) {
+  if (!Array.isArray(historial) || historial.length < 2) return false;
+  for (var i = historial.length - 2; i >= 0; i--) {
+    var entrada = historial[i];
+    if (!entrada || entrada.role !== 'user') continue;
+    if (entrada.content !== textoActual) return false; // el 'user' anterior más reciente no coincide — no es reenvío
+    for (var j = i + 1; j < historial.length - 1; j++) {
+      if (historial[j] && historial[j].role === 'assistant') return true; // ya se había respondido a ese mensaje
+    }
+    return false; // texto igual pero todavía sin respuesta previa — no es un reenvío real
+  }
+  return false;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔧 FIX (24 jun): activarSeguimiento ahora protege LILI_NUMERO.
 // Antes, cuando un lead escalaba y el mensaje de Lili (desde su número
@@ -3770,6 +3793,26 @@ function procesarMensaje(from, texto, leadId, referralData) {
       '\n\nEste lead llegó desde este anuncio y ya vio el mensaje de bienvenida de Meta antes de escribir — NO le preguntes genéricamente qué mueble le interesa. Reconoce que viene del anuncio, confirma características y precio de este producto siguiendo tus reglas (características antes que precio, siempre), y haz una pregunta de acción concreta para avanzar.';
   }
 
+  // 🆕 Deduplicación determinística de formulario repetido (caso real
+  // Deissy) — ver detectarMensajeDuplicado() para el criterio exacto. Se
+  // excluyen los placeholders sintéticos de media ("[El cliente envió...]")
+  // porque dos fotos/audios DISTINTOS comparten el mismo texto genérico —
+  // compararlos produciría falsos positivos (marcar una foto nueva como
+  // reenvío de la anterior solo porque ambas dicen "[El cliente envió una
+  // imagen]"). NO se bloquea el mensaje — Claude lo sigue recibiendo, solo
+  // se le avisa para que no reinicie el saludo ni repita la misma pregunta.
+  var esPlaceholderMedia = typeof texto === 'string' && texto.indexOf('[El cliente envió ') === 0;
+  var esReenvioDuplicado = !esPlaceholderMedia && detectarMensajeDuplicado(conversaciones[from], texto);
+  if (esReenvioDuplicado) {
+    systemConContexto += '\n\nEste mensaje es idéntico a uno que el cliente ya envió antes en esta conversación (posible reenvío técnico del formulario). YA fue respondido. No reinicies el saludo ni repitas la misma pregunta. Continúa desde donde quedó el hilo, o si no hay nada nuevo que agregar, pregunta con naturalidad si sigue interesado.';
+    console.log('🔁 Mensaje duplicado detectado para ' + from + ' — nota inyectada al system prompt, no se bloquea');
+    registrarEventoLead(leadId || null, 'DUPLICATE_MESSAGE_DETECTED', {
+      actor: 'SYSTEM',
+      source: 'procesarMensaje',
+      metadata: { longitud_texto: texto.length }
+    });
+  }
+
   // Si el último mensaje del lead es una imagen real (ya descargada y subida a
   // Cloudinary), se la mandamos a Claude con visión para que pueda "verla" de
   // verdad, en vez de solo trabajar con el texto genérico "[El cliente envió una imagen]".
@@ -4426,6 +4469,7 @@ app.mensajeReactivacion = mensajeReactivacion;
 app.infoProductoSeguimiento = infoProductoSeguimiento;
 app.activarSeguimiento = activarSeguimiento;
 app.guardarSeguimiento = guardarSeguimiento;
+app.detectarMensajeDuplicado = detectarMensajeDuplicado;
 app.liberarLockSiLoReclamamos = liberarLockSiLoReclamamos;
 app.capturarMensajeCRM = capturarMensajeCRM;
 app.capturarReferral = capturarReferral;
