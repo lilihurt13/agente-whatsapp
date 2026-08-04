@@ -694,6 +694,10 @@ async function inicializarBD() {
     await pool.query('CREATE TABLE IF NOT EXISTS conversaciones (numero TEXT PRIMARY KEY, mensajes JSONB NOT NULL DEFAULT \'[]\')');
     await pool.query('CREATE TABLE IF NOT EXISTS pausados (numero TEXT PRIMARY KEY)');
     await pool.query('CREATE TABLE IF NOT EXISTS seguimientos (numero TEXT PRIMARY KEY, estado TEXT NOT NULL, timestamp BIGINT NOT NULL, intentos INT NOT NULL DEFAULT 0, ultimo_mensaje_lead BIGINT)');
+    // 🆕 Seguimiento consciente del producto (auditoría 2 ago 2026): antes
+    // TODOS los seguimientos decían "repisa" sin importar qué producto pidió
+    // el lead. Ver getMensajeSeguimiento()/mensajeReactivacion() más abajo.
+    await pool.query('ALTER TABLE seguimientos ADD COLUMN IF NOT EXISTS producto TEXT');
     await pool.query('CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)');
     await pool.query('CREATE TABLE IF NOT EXISTS notas (numero TEXT PRIMARY KEY, nota TEXT)');
 
@@ -843,13 +847,14 @@ async function inicializarBD() {
     var rp = await pool.query('SELECT numero FROM pausados');
     rp.rows.forEach(function(row) { pausados[row.numero] = true; });
 
-    var rs = await pool.query('SELECT numero, estado, timestamp, intentos, ultimo_mensaje_lead FROM seguimientos');
+    var rs = await pool.query('SELECT numero, estado, timestamp, intentos, ultimo_mensaje_lead, producto FROM seguimientos');
     rs.rows.forEach(function(row) {
       seguimientos[row.numero] = {
         estado: row.estado,
         timestamp: Number(row.timestamp),
         intentos: row.intentos,
-        ultimoMensajeLead: row.ultimo_mensaje_lead ? Number(row.ultimo_mensaje_lead) : undefined
+        ultimoMensajeLead: row.ultimo_mensaje_lead ? Number(row.ultimo_mensaje_lead) : undefined,
+        producto: row.producto || null
       };
     });
 
@@ -920,8 +925,8 @@ function guardarSeguimiento(numero) {
   var s = seguimientos[numero];
   if (!s) return;
   pool.query(
-    'INSERT INTO seguimientos (numero, estado, timestamp, intentos, ultimo_mensaje_lead) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (numero) DO UPDATE SET estado = $2, timestamp = $3, intentos = $4, ultimo_mensaje_lead = $5',
-    [numero, s.estado, s.timestamp, s.intentos, s.ultimoMensajeLead || null]
+    'INSERT INTO seguimientos (numero, estado, timestamp, intentos, ultimo_mensaje_lead, producto) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (numero) DO UPDATE SET estado = $2, timestamp = $3, intentos = $4, ultimo_mensaje_lead = $5, producto = $6',
+    [numero, s.estado, s.timestamp, s.intentos, s.ultimoMensajeLead || null, s.producto || null]
   ).catch(function(e) { console.error('Error guardando seguimiento ' + numero + ':', e.message); });
 }
 
@@ -979,12 +984,33 @@ const TIEMPO = {
   cotizacion_2:           7 * 24 * 60 * 60 * 1000,
 };
 
-function getMensajeSeguimiento(estado, intento, nombre) {
+// 🆕 Seguimiento consciente del producto (auditoría 2 ago 2026) — antes
+// TODOS los mensajes de seguimiento decían "repisa" sin importar qué
+// producto pidió el lead, porque nacieron cuando Repisa Flotante era el
+// único producto. Mapa de artículo/nombre/pronombre/concordancia para poder
+// generar frases gramaticalmente correctas para cualquier producto sin
+// reescribir cada mensaje a mano. Nunca se usa "repisa" como fallback — el
+// `default` (producto null/desconocido) usa "tu pedido", nunca un producto
+// específico adivinado.
+var INFO_PRODUCTO_SEGUIMIENTO_DEFAULT = { articulo: 'el', nombre: 'pedido', pron: 'lo', listo: 'listo' };
+var INFO_PRODUCTO_SEGUIMIENTO = {
+  'Repisa Flotante': { articulo: 'la', nombre: 'repisa', pron: 'la', listo: 'lista' },
+  'Mesa Auxiliar': { articulo: 'la', nombre: 'mesa auxiliar', pron: 'la', listo: 'lista' },
+  'Escritorio Flotante': { articulo: 'el', nombre: 'escritorio', pron: 'lo', listo: 'listo' },
+  'Escritorio con Cajones': { articulo: 'el', nombre: 'escritorio', pron: 'lo', listo: 'listo' }
+};
+
+function infoProductoSeguimiento(producto) {
+  return INFO_PRODUCTO_SEGUIMIENTO[producto] || INFO_PRODUCTO_SEGUIMIENTO_DEFAULT;
+}
+
+function getMensajeSeguimiento(estado, intento, nombre, producto) {
   var n = nombre ? nombre : '';
   var saludo = n ? ('Hola ' + n + '! 😊') : 'Hola! 😊';
+  var info = infoProductoSeguimiento(producto);
 
   if (estado === 'saludo_sin_respuesta') {
-    if (intento === 1) return saludo + ' ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
+    if (intento === 1) return saludo + ' ¿Pudiste pensar en ' + info.articulo + ' ' + info.nombre + '? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
     if (intento === 2) return saludo + ' Aquí estoy cuando quieras retomar 🌿';
   }
   if (estado === 'esperando_info') {
@@ -992,12 +1018,12 @@ function getMensajeSeguimiento(estado, intento, nombre) {
     if (intento === 2) return saludo + ' Aquí estoy cuando quieras retomar 🌿';
   }
   if (estado === 'esperando_decision') {
-    if (intento === 1) return saludo + ' ¿Alcanzaste a ver el espacio donde la quieres? Tengo cupo de fabricación esta semana si quieres que te la deje lista 🌿';
-    if (intento === 2) return saludo + ' Solo para no dejarte la repisa pendiente — si más adelante la quieres retomar, aquí estoy con mucho gusto 😊';
+    if (intento === 1) return saludo + ' ¿Alcanzaste a ver el espacio donde ' + info.pron + ' quieres? Tengo cupo de fabricación esta semana si quieres que te ' + info.pron + ' deje ' + info.listo + ' 🌿';
+    if (intento === 2) return saludo + ' Solo para no dejarte ' + info.articulo + ' ' + info.nombre + ' pendiente — si más adelante ' + info.pron + ' quieres retomar, aquí estoy con mucho gusto 😊';
   }
   if (estado === 'cotizacion_enviada') {
-    if (intento === 1) return saludo + ' ¿Cómo te fue con la cotización de tu repisa? Si quieres ajustamos cualquier detalle (medida, fecha de entrega). Tengo cupo para arrancar esta semana 🌿';
-    if (intento === 2) return saludo + ' Solo para no dejarte la repisa pendiente — si más adelante la quieres retomar, aquí estoy con mucho gusto 😊';
+    if (intento === 1) return saludo + ' ¿Cómo te fue con la cotización de tu ' + info.nombre + '? Si quieres ajustamos cualquier detalle (medida, fecha de entrega). Tengo cupo para arrancar esta semana 🌿';
+    if (intento === 2) return saludo + ' Solo para no dejarte ' + info.articulo + ' ' + info.nombre + ' pendiente — si más adelante ' + info.pron + ' quieres retomar, aquí estoy con mucho gusto 😊';
   }
   return null;
 }
@@ -1035,7 +1061,7 @@ function leadPrometioInfo(texto) {
 // puede entrar al objeto `seguimientos`, sin importar desde dónde se llame
 // esta función.
 // ═══════════════════════════════════════════════════════════════════════════
-function activarSeguimiento(numero, estado) {
+function activarSeguimiento(numero, estado, producto) {
   // PROTECCIÓN: Lili NUNCA puede quedar registrada como lead en seguimiento
   if (numero === LILI_NUMERO) {
     console.log('⏹️ Ignorando activación de seguimiento para Lili (' + numero + ') — su número no es un lead');
@@ -1046,9 +1072,14 @@ function activarSeguimiento(numero, estado) {
       (seguimientos[numero].estado === 'cerrado_venta' ||
        seguimientos[numero].estado === 'cerrado_perdido')) return;
 
-  seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0 };
+  // 🆕 Si quien llama no tiene el producto a mano en este momento, se
+  // conserva el que ya se conocía de este número (nunca se pierde ni se
+  // inventa) — null solo si nunca se supo.
+  var productoResuelto = producto || (seguimientos[numero] && seguimientos[numero].producto) || null;
+
+  seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0, producto: productoResuelto };
   guardarSeguimiento(numero);
-  console.log('Seguimiento activado para ' + numero + ': ' + estado);
+  console.log('Seguimiento activado para ' + numero + ': ' + estado + (productoResuelto ? ' (producto: ' + productoResuelto + ')' : ''));
 }
 
 function cancelarSeguimiento(numero) {
@@ -1109,13 +1140,28 @@ setInterval(function() {
 
       if (seg.intentos <= 2) {
         var nombre = getNombreLead(numero);
-        var mensaje = getMensajeSeguimiento(seg.estado, seg.intentos, nombre);
+        var mensaje = getMensajeSeguimiento(seg.estado, seg.intentos, nombre, seg.producto);
 
         if (mensaje) {
-          enviarPlantilla(numero, 'seguimiento_repisa', 'es_CO');
-          seg.timestamp = Date.now();
-          guardarSeguimiento(numero);
-          console.log('Seguimiento (plantilla) enviado a ' + numero + ' (intento ' + seg.intentos + ', estado: ' + seg.estado + ')');
+          // 🆕 La plantilla "seguimiento_repisa" tiene el texto de repisa fijo
+          // (sin variable, aprobada por Meta solo para ese producto — ver el
+          // texto exacto en /panel/reabrir más abajo). Fuera de la ventana de
+          // 24h, WhatsApp exige una plantilla aprobada — no existe todavía
+          // una plantilla genérica para Mesa Auxiliar/Escritorio, así que no
+          // se puede mandar un "mensaje genérico" de texto libre aquí. Hasta
+          // que exista esa plantilla, se avisa a Lili para seguimiento manual
+          // en vez de mandar el producto equivocado o fallar en silencio.
+          if (!seg.producto || seg.producto === 'Repisa Flotante') {
+            enviarPlantilla(numero, 'seguimiento_repisa', 'es_CO');
+            seg.timestamp = Date.now();
+            guardarSeguimiento(numero);
+            console.log('Seguimiento (plantilla) enviado a ' + numero + ' (intento ' + seg.intentos + ', estado: ' + seg.estado + ')');
+          } else {
+            console.log('⏭️ Seguimiento por plantilla omitido para ' + numero + ' — producto=' + seg.producto + ', no hay plantilla de WhatsApp aprobada para ese producto fuera de la ventana de 24h');
+            notificarLili(numero, 'Seguimiento automático pendiente: este lead pidió "' + seg.producto + '" y todavía no hay una plantilla de WhatsApp aprobada para eso fuera de la ventana de 24h. Escríbele tú directamente.');
+            seg.timestamp = Date.now();
+            guardarSeguimiento(numero);
+          }
         }
       } else {
         seguimientos[numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: seg.intentos };
@@ -1129,8 +1175,9 @@ setInterval(function() {
 
 var ultimaTandaReactivacion = null;
 
-function mensajeReactivacion(intento) {
-  if (intento === 1) return 'Hola! 😊 ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
+function mensajeReactivacion(intento, producto) {
+  var info = infoProductoSeguimiento(producto);
+  if (intento === 1) return 'Hola! 😊 ¿Pudiste pensar en ' + info.articulo + ' ' + info.nombre + '? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
   return 'Hola! 😊 No hay afán. Si en algún momento quieres retomar, aquí estoy con gusto 🌿';
 }
 
@@ -1181,7 +1228,7 @@ setInterval(function() {
         // (ver el filtro "horasDesde >= 3 && horasDesde <= 24" más arriba), así que
         // SIEMPRE está dentro de la ventana de 24h — no necesita plantilla, texto
         // libre funciona bien y permite el mensaje personalizado de mensajeReactivacion().
-        enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos));
+        enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos, c.seg.producto));
         c.seg.timestamp = Date.now();
         guardarSeguimiento(c.numero);
         console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
@@ -3306,7 +3353,7 @@ app.post('/webhook', function(req, res) {
             agregarMensaje(leadNumero, 'assistant', message.text.body);
             var estadoDetectado = detectarEstadoPorMensajeLili(message.text.body);
             if (estadoDetectado) {
-              activarSeguimiento(leadNumero, estadoDetectado);
+              activarSeguimiento(leadNumero, estadoDetectado, resultadoCRM.lead ? resultadoCRM.lead.product : null);
               console.log('Estado seguimiento activado para ' + leadNumero + ': ' + estadoDetectado);
             }
           });
@@ -3357,7 +3404,7 @@ app.post('/webhook', function(req, res) {
 
           if (leadPrometioInfo(texto) && !pausados[from]) {
             setTimeout(function() {
-              if (!pausados[from]) { activarSeguimiento(from, 'esperando_info'); }
+              if (!pausados[from]) { activarSeguimiento(from, 'esperando_info', resultadoCRM.lead ? resultadoCRM.lead.product : null); }
             }, 2000);
           }
 
@@ -3601,7 +3648,10 @@ async function manejarCotizacionRepisa(from, texto, tag, systemConContexto, mens
     agregarMensaje(from, 'assistant', textoLimpioFinal); // único agregarMensaje de todo el flujo de cotización
 
     if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
-      seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
+      // Este flujo (manejarCotizacionRepisa) SOLO existe para cotizaciones de
+      // Repisa Flotante (ver resolverPrecioRepisa/tag.largoCm arriba) — el
+      // producto aquí nunca es ambiguo, no hace falta resolverProductoParaFotos.
+      seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: 'Repisa Flotante' };
       guardarSeguimiento(from);
     }
 
@@ -3855,7 +3905,7 @@ function procesarMensaje(from, texto, leadId, referralData) {
       console.log('Escalado. Numero pausado: ' + from);
     } else {
       if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
-        seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
+        seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotos };
         guardarSeguimiento(from);
       }
     }
@@ -3910,7 +3960,18 @@ function procesarMensaje(from, texto, leadId, referralData) {
         } else {
           if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
             if (from !== LILI_NUMERO) {
-              seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
+              // Mismo criterio de resolución de producto que el intento
+              // principal (resolverProductoParaFotos ya está en scope vía
+              // closure de procesarMensaje: productoPersistido,
+              // productoFormularioParaFotos, productoReferral).
+              var productoParaFotosReintento = resolverProductoParaFotos({
+                textoActual: texto,
+                respuestaClaude: respuesta,
+                historial: conversaciones[from],
+                productoContextoOrigen: productoFormularioParaFotos || productoReferral,
+                productoPersistido: productoPersistido
+              });
+              seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotosReintento };
               guardarSeguimiento(from);
             }
           }
@@ -4360,6 +4421,11 @@ app.obtenerOCrearLead = obtenerOCrearLead;
 app.tipoDeMensajeEsManejado = tipoDeMensajeEsManejado;
 app.resolverNumeroRemitente = resolverNumeroRemitente;
 app.reclamarLockProcesando = reclamarLockProcesando;
+app.getMensajeSeguimiento = getMensajeSeguimiento;
+app.mensajeReactivacion = mensajeReactivacion;
+app.infoProductoSeguimiento = infoProductoSeguimiento;
+app.activarSeguimiento = activarSeguimiento;
+app.guardarSeguimiento = guardarSeguimiento;
 app.liberarLockSiLoReclamamos = liberarLockSiLoReclamamos;
 app.capturarMensajeCRM = capturarMensajeCRM;
 app.capturarReferral = capturarReferral;
