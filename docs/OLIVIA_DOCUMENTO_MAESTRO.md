@@ -215,6 +215,41 @@ Sospecha original de Lili: Olivia no está usando datos de formulario (ciudad, v
 
 **Pendiente (quedó abierto durante la auditoría, no bloqueante):** cola/debounce de mensajes en ráfaga (siguiente iteración del lock síncrono — hoy un segundo mensaje en ráfaga se guarda sin respuesta en esa pasada, comportamiento documentado no un bug), y crear/conectar una plantilla de WhatsApp genérica en Meta para que el seguimiento automático fuera de 24h también funcione para Mesa Auxiliar/Escritorio (hoy notifica a Lili en su lugar). Ver `docs/PENDIENTES.md`.
 
+---
+
+## ETAPA 2 (3 ago 2026) — dos puntos aprobados, ambos COMPLETADOS
+
+### Punto 1 — regla de links/imágenes no vistos (caso real Alex)
+Alex compartió un link de Facebook y Olivia no debía asumir qué mostraba. Se agregó a `getSystemPrompt()`, junto a la regla ya existente de audio/archivo no visible: un link de texto (Facebook, Instagram, cualquier URL) recibe el mismo trato — reconocer, nunca describir/asumir contenido, escalar con `[ESCALAR]`. Se agregó además una **REGLA PERMANENTE**: si en cualquier punto de la conversación se escaló algo por no poder verlo (imagen ambigua, audio, archivo, o link), Olivia nunca debe afirmar después con seguridad qué contenía, ni asumir que una respuesta corta del cliente ("sí", "esos") lo confirma — sigue tratándolo como no visto hasta que Lili confirme el contenido. Texto exacto de Lili, sin parafrasear (contenido de cara al cliente).
+
+Pruebas: `test/regla-links-no-vistos.test.js` (3 casos, verifican presencia del texto exacto en el prompt). 232/232 pruebas totales pasan. **Mergeado y pusheado a `main` (commit `da843ac`, merge `ecdea19`) el 3 de agosto de 2026.**
+
+### Punto 2 — cadencia de seguimiento según intención de compra del formulario
+Campo real del formulario confirmado por Lili: `¿cuándo_te_gustaría_comprarla?`, con 4 valores posibles (no 5 — no existe opción "más adelante" en el formulario actual): `inmediatamente`, `en_los_próximos_15_días`, `durante_este_mes`, `en_1_o_2_meses`.
+
+**Tiempos aprobados** (ventana de horas desde el último mensaje del lead, usada por el cron de reactivación 12pm/7pm — hoy desactivado por `REACTIVACION_12_19_ENABLED`, listo para cuando se active):
+
+| Intención | minHoras | maxHoras |
+|---|---|---|
+| inmediatamente | 3 | 24 |
+| en_los_próximos_15_días (= default sin intención conocida) | 3 | 24 |
+| durante_este_mes | 48 | 144 (6 días) |
+| en_1_o_2_meses | 120 (5 días) | 480 (20 días) |
+
+**Implementación:**
+- `detectarIntencionCompraFormulario(fieldData)` extrae el valor exacto, nunca inventa.
+- `manejarEventoLeadgen()` persiste la intención en `leads.buy_intent` (nueva columna) al vincular el formulario, y si es `'inmediatamente'` dispara `notificarLili()` de inmediato (atención prioritaria, sin esperar a que el saludo quede sin respuesta) — aislado en su propio `try/catch` para que un fallo aquí nunca revierta una vinculación ya exitosa.
+- `procesarMensaje()` propaga la intención persistida (nueva columna `seguimientos.nivel_intencion`) al primer `saludo_sin_respuesta` — **solo a ese estado**, los demás (`esperando_info`, `esperando_decision`, `cotizacion_enviada`) no se tocan.
+- `ventanaReactivacion(nivelIntencion)` reemplaza la ventana fija `3-24h` del cron de reactivación por la tabla de arriba.
+
+**Problema técnico real encontrado al implementar (no estaba explícito en el diseño aprobado):** `durante_este_mes` y `en_1_o_2_meses` caen fuera de la ventana de 24h de WhatsApp desde su primer momento elegible — ahí no se puede mandar texto libre, solo una plantilla aprobada. Se reutilizó el mismo guard que ya existía en el cron horario (plantilla `seguimiento_repisa` solo si el producto es Repisa Flotante; si no, `notificarLili()` para seguimiento manual) — depende de la misma plantilla genérica pendiente que quedó abierta en Etapa 1.
+
+**Simplificación deliberada:** el flujo del cotizador de repisas (`manejarCotizacionRepisa()`) no recibe `leadId`, así que su `seguimientos[from]` queda con `nivelIntencion: null` (cadencia por defecto) — se aceptó por ser un caso poco frecuente (el lead ya recibió un precio real, no es un lead frío recién llegado).
+
+Pruebas: `test/cadencia-intencion-compra.test.js` (8 casos). 240/240 pruebas totales pasan. **Mergeado y pusheado a `main` (commit `7b08be9`) el 3 de agosto de 2026.**
+
+**Pendientes que quedan abiertos tras Etapa 2 (ninguno bloqueante):** cola/debounce de mensajes en ráfaga, plantilla de WhatsApp genérica para productos distintos a Repisa Flotante fuera de 24h (afecta tanto al seguimiento por producto como a esta cadencia por intención), y confirmar con leads reales que la alerta inmediata de "inmediatamente" y la cadencia de las 4 categorías funcionan como se espera una vez se reactive `REACTIVACION_12_19_ENABLED`.
+
 ### 6.4 Incidente — `cmd=todo` en `/control` vació la tabla `pausados` completa (2 ago 2026)
 
 **Qué pasó:** se ejecutó `cmd=pausatodo` seguido de `cmd=todo` en `/control`. `cmd=todo` no solo quita la pausa global — también llama a `quitarTodosPausados()`, que hace `DELETE FROM pausados` sin condición. Efecto real: los ~126 números que estaban pausados manualmente (leads en "🔵 Atendiendo yo") quedaron sin protección — Olivia habría vuelto a responderles automáticamente.
