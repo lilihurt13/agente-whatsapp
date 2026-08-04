@@ -204,7 +204,16 @@ Sospecha original de Lili: Olivia no está usando datos de formulario (ciudad, v
 - Pruebas: `test/seguimiento-producto.test.js` (nuevo, 12 pruebas). 222/222 pruebas totales pasan.
 - **Mergeado a `main` (commit `231ee3e`, merge `7b2ec4f`) y pusheado el 3 de agosto de 2026.**
 
-**Pendiente (resto de la auditoría del 2 ago):** cola/debounce de mensajes en ráfaga (siguiente iteración del lock síncrono), formulario duplicado, y crear/conectar una plantilla de WhatsApp genérica en Meta para que el seguimiento automático fuera de 24h también funcione para Mesa Auxiliar/Escritorio (hoy notifica a Lili en su lugar). Ver `docs/PENDIENTES.md`.
+**Etapa 1 (cont.) — deduplicación determinística de formulario repetido (caso Deissy) — COMPLETADO (3 ago 2026):**
+- Causa: cuando un cliente reenviaba el mismo texto (reenvío técnico del formulario, mismo número, mismo contenido), Olivia lo trataba como mensaje nuevo y repetía el saludo/pregunta ya respondidos.
+- Fix: `detectarMensajeDuplicado(historial, textoActual)` (función pura) compara el texto entrante **solo** contra el último mensaje `'user'` guardado en `conversaciones[from]` (no contra todo el historial) — si son idénticos Y ya hay una respuesta `'assistant'` después de ese mensaje anterior, es un reenvío. En `procesarMensaje()` se inyecta una nota al `systemConContexto` ("Este mensaje es idéntico a uno que el cliente ya envió antes... No reinicies el saludo ni repitas la misma pregunta") — **el mensaje NO se bloquea**, Claude lo sigue recibiendo con esa nota. Se excluyen a propósito los placeholders sintéticos de media (`"[El cliente envió una imagen]"`, etc.) porque dos fotos/audios *distintos* comparten ese mismo texto genérico — sin el guard, se habrían marcado falsamente como reenvíos entre sí.
+- **Rompe el catálogo cerrado de 10 eventos documentado en la Fase 1A (Paso 10):** se agrega `DUPLICATE_MESSAGE_DETECTED` como 11º evento en `lead_events`, a pedido explícito de este diseño. El catálogo ya NO es cerrado — cualquier sesión futura que dependa de esa lista fija debe saber que ahora son 11 eventos, no 10.
+- Pruebas: `test/dedup-mensaje-duplicado.test.js` (nuevo, 7 pruebas) — incluye el caso real Deissy, texto parecido-pero-no-idéntico (no dispara), sin respuesta previa (no dispara), y el guard de placeholders de media documentado explícitamente. 229/229 pruebas totales pasan.
+- **Mergeado y pusheado a `main` (commit `19adc69`) el 3 de agosto de 2026.**
+
+**Auditoría del 2 de agosto: CERRADA.** Los 5 hallazgos (fallo silencioso del webhook, condición de carrera, seguimiento genérico, formulario duplicado, y el bloqueo externo de `leads_retrieval` resuelto en Etapa 0) quedaron todos atendidos con lock síncrono/mejoras inmediatas donde aplicaba.
+
+**Pendiente (quedó abierto durante la auditoría, no bloqueante):** cola/debounce de mensajes en ráfaga (siguiente iteración del lock síncrono — hoy un segundo mensaje en ráfaga se guarda sin respuesta en esa pasada, comportamiento documentado no un bug), y crear/conectar una plantilla de WhatsApp genérica en Meta para que el seguimiento automático fuera de 24h también funcione para Mesa Auxiliar/Escritorio (hoy notifica a Lili en su lugar). Ver `docs/PENDIENTES.md`.
 
 ### 6.4 Incidente — `cmd=todo` en `/control` vació la tabla `pausados` completa (2 ago 2026)
 
