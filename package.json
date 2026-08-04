@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node whatsapp_agent.js",
     "dev": "nodemon whatsapp_agent.js",
-    "test": "node --test --test-concurrency=1 test/phase1a.test.js test/phase1b.test.js test/ajuste1.test.js test/fix-referral-timing.test.js test/cotizador-v2.test.js test/cotizador-v2-tag.test.js test/cotizador-v2-fase5.test.js test/cotizador-v2-fase6.test.js test/cotizador-v2-prioridad-prompt.test.js test/cotizador-v2-continuidad.test.js test/cotizador-v2-fase7-contexto.test.js test/fotos-por-producto.test.js test/fix-catalogo-mesa-envio.test.js test/fix3-filtro-envio-gratis.test.js test/webhook-tipo-mensaje.test.js test/fix4-mesa-auxiliar-ensamble.test.js test/reactivacion-1219-flag.test.js test/lock-sincrono-condicion-carrera.test.js test/seguimiento-producto.test.js test/dedup-mensaje-duplicado.test.js test/regla-links-no-vistos.test.js"
+    "test": "node --test --test-concurrency=1 test/phase1a.test.js test/phase1b.test.js test/ajuste1.test.js test/fix-referral-timing.test.js test/cotizador-v2.test.js test/cotizador-v2-tag.test.js test/cotizador-v2-fase5.test.js test/cotizador-v2-fase6.test.js test/cotizador-v2-prioridad-prompt.test.js test/cotizador-v2-continuidad.test.js test/cotizador-v2-fase7-contexto.test.js test/fotos-por-producto.test.js test/fix-catalogo-mesa-envio.test.js test/fix3-filtro-envio-gratis.test.js test/webhook-tipo-mensaje.test.js test/fix4-mesa-auxiliar-ensamble.test.js test/reactivacion-1219-flag.test.js test/lock-sincrono-condicion-carrera.test.js test/seguimiento-producto.test.js test/dedup-mensaje-duplicado.test.js test/regla-links-no-vistos.test.js test/cadencia-intencion-compra.test.js"
   },
   "keywords": [
     "whatsapp",

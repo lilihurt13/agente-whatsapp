@@ -698,6 +698,10 @@ async function inicializarBD() {
     // TODOS los seguimientos decían "repisa" sin importar qué producto pidió
     // el lead. Ver getMensajeSeguimiento()/mensajeReactivacion() más abajo.
     await pool.query('ALTER TABLE seguimientos ADD COLUMN IF NOT EXISTS producto TEXT');
+    // 🆕 Etapa 2, punto 2 (3 ago 2026) — cadencia de seguimiento según la
+    // intención de compra que el lead marcó en el formulario. Ver
+    // detectarIntencionCompraFormulario() y VENTANA_REACTIVACION_POR_INTENCION.
+    await pool.query('ALTER TABLE seguimientos ADD COLUMN IF NOT EXISTS nivel_intencion TEXT');
     await pool.query('CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)');
     await pool.query('CREATE TABLE IF NOT EXISTS notas (numero TEXT PRIMARY KEY, nota TEXT)');
 
@@ -737,6 +741,10 @@ async function inicializarBD() {
       'updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
       ')'
     );
+    // 🆕 Etapa 2, punto 2 (3 ago 2026) — intención de compra declarada en el
+    // formulario ("¿cuándo_te_gustaría_comprarla?"), persistida en el lead
+    // para sobrevivir hasta que se active el primer saludo_sin_respuesta.
+    await pool.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS buy_intent TEXT');
 
     await pool.query(
       'CREATE TABLE IF NOT EXISTS messages (' +
@@ -847,14 +855,15 @@ async function inicializarBD() {
     var rp = await pool.query('SELECT numero FROM pausados');
     rp.rows.forEach(function(row) { pausados[row.numero] = true; });
 
-    var rs = await pool.query('SELECT numero, estado, timestamp, intentos, ultimo_mensaje_lead, producto FROM seguimientos');
+    var rs = await pool.query('SELECT numero, estado, timestamp, intentos, ultimo_mensaje_lead, producto, nivel_intencion FROM seguimientos');
     rs.rows.forEach(function(row) {
       seguimientos[row.numero] = {
         estado: row.estado,
         timestamp: Number(row.timestamp),
         intentos: row.intentos,
         ultimoMensajeLead: row.ultimo_mensaje_lead ? Number(row.ultimo_mensaje_lead) : undefined,
-        producto: row.producto || null
+        producto: row.producto || null,
+        nivelIntencion: row.nivel_intencion || null
       };
     });
 
@@ -925,8 +934,8 @@ function guardarSeguimiento(numero) {
   var s = seguimientos[numero];
   if (!s) return;
   pool.query(
-    'INSERT INTO seguimientos (numero, estado, timestamp, intentos, ultimo_mensaje_lead, producto) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (numero) DO UPDATE SET estado = $2, timestamp = $3, intentos = $4, ultimo_mensaje_lead = $5, producto = $6',
-    [numero, s.estado, s.timestamp, s.intentos, s.ultimoMensajeLead || null, s.producto || null]
+    'INSERT INTO seguimientos (numero, estado, timestamp, intentos, ultimo_mensaje_lead, producto, nivel_intencion) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (numero) DO UPDATE SET estado = $2, timestamp = $3, intentos = $4, ultimo_mensaje_lead = $5, producto = $6, nivel_intencion = $7',
+    [numero, s.estado, s.timestamp, s.intentos, s.ultimoMensajeLead || null, s.producto || null, s.nivelIntencion || null]
   ).catch(function(e) { console.error('Error guardando seguimiento ' + numero + ':', e.message); });
 }
 
@@ -1198,6 +1207,34 @@ setInterval(function() {
 
 var ultimaTandaReactivacion = null;
 
+// 🆕 Etapa 2, punto 2 (3 ago 2026) — cadencia de reactivación (estado
+// saludo_sin_respuesta) según la intención de compra del formulario.
+// Tiempos aprobados por Lili. minHoras/maxHoras se miden desde el último
+// mensaje real del lead (mismo criterio que ya usaba el cron, `ref` más
+// abajo). Con solo 2 corridas diarias (12pm/7pm) no se puede garantizar un
+// segundo intento a una hora exacta del mismo día — la granularidad real
+// de este cron es de medio día, no de horas.
+//
+// ⚠️ Los rangos de 'durante_este_mes' y 'en_1_o_2_meses' caen fuera de la
+// ventana de 24h de WhatsApp — ahí NO se puede usar texto libre
+// (enviarMensaje), solo una plantilla aprobada. Mismo guard que ya existe
+// en el cron horario: usa la plantilla "seguimiento_repisa" solo si el
+// producto es Repisa Flotante (ese es el único texto aprobado hoy);
+// para cualquier otro producto, notifica a Lili en vez de mandar el
+// producto equivocado o fallar en silencio. Ver el guard en el envío,
+// más abajo.
+const VENTANA_REACTIVACION_POR_INTENCION = {
+  'inmediatamente':          { minHoras: 3,      maxHoras: 24 },
+  'en_los_próximos_15_días': { minHoras: 3,      maxHoras: 24 },
+  'durante_este_mes':        { minHoras: 48,     maxHoras: 6 * 24 },
+  'en_1_o_2_meses':          { minHoras: 5 * 24, maxHoras: 20 * 24 }
+};
+const VENTANA_REACTIVACION_DEFAULT = VENTANA_REACTIVACION_POR_INTENCION['en_los_próximos_15_días'];
+
+function ventanaReactivacion(nivelIntencion) {
+  return VENTANA_REACTIVACION_POR_INTENCION[nivelIntencion] || VENTANA_REACTIVACION_DEFAULT;
+}
+
 function mensajeReactivacion(intento, producto) {
   var info = infoProductoSeguimiento(producto);
   if (intento === 1) return 'Hola! 😊 ¿Pudiste pensar en ' + info.articulo + ' ' + info.nombre + '? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
@@ -1230,13 +1267,14 @@ setInterval(function() {
     var ahora = Date.now();
     var ref = seg.ultimoMensajeLead || seg.timestamp;
     var horasDesde = (ahora - ref) / (60 * 60 * 1000);
+    var ventana = ventanaReactivacion(seg.nivelIntencion);
 
-    if (horasDesde >= 3 && horasDesde <= 24) {
+    if (horasDesde >= ventana.minHoras && horasDesde <= ventana.maxHoras) {
       candidatos.push({ numero: numero, seg: seg });
-    } else if (horasDesde > 24) {
+    } else if (horasDesde > ventana.maxHoras) {
       seguimientos[numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: seg.intentos };
       guardarSeguimiento(numero);
-      console.log('Lead fuera de ventana 24h, cerrado: ' + numero);
+      console.log('Lead fuera de ventana (' + ventana.maxHoras + 'h, intención: ' + (seg.nivelIntencion || 'default') + '), cerrado: ' + numero);
     }
   }
 
@@ -1247,14 +1285,25 @@ setInterval(function() {
       if (pausados[c.numero]) return;
       c.seg.intentos++;
       if (c.seg.intentos <= 2) {
-        // Este cron filtra explícitamente leads entre 3-24h desde su último mensaje
-        // (ver el filtro "horasDesde >= 3 && horasDesde <= 24" más arriba), así que
-        // SIEMPRE está dentro de la ventana de 24h — no necesita plantilla, texto
-        // libre funciona bien y permite el mensaje personalizado de mensajeReactivacion().
-        enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos, c.seg.producto));
+        // 🆕 Etapa 2, punto 2: con la ventana ahora parametrizada por
+        // intención, 'durante_este_mes' y 'en_1_o_2_meses' SÍ pueden caer
+        // fuera de las 24h de WhatsApp (su minHoras ya empieza en 48h/5
+        // días) — ahí no se puede usar texto libre. Mismo guard que ya
+        // existe en el cron horario: plantilla solo si el producto es
+        // Repisa Flotante, si no, avisa a Lili para seguimiento manual.
+        var horasDesdeEnvio = (Date.now() - (c.seg.ultimoMensajeLead || c.seg.timestamp)) / (60 * 60 * 1000);
+        if (horasDesdeEnvio <= 24) {
+          enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos, c.seg.producto));
+          console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
+        } else if (!c.seg.producto || c.seg.producto === 'Repisa Flotante') {
+          enviarPlantilla(c.numero, 'seguimiento_repisa', 'es_CO');
+          console.log('Reactivación (plantilla, fuera de 24h) enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
+        } else {
+          console.log('⏭️ Reactivación por plantilla omitida para ' + c.numero + ' — producto=' + c.seg.producto + ', no hay plantilla aprobada para ese producto fuera de la ventana de 24h');
+          notificarLili(c.numero, 'Seguimiento de reactivación pendiente: este lead pidió "' + c.seg.producto + '" y está fuera de la ventana de 24h de WhatsApp sin plantilla genérica todavía. Escríbele tú directamente.');
+        }
         c.seg.timestamp = Date.now();
         guardarSeguimiento(c.numero);
-        console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
       } else {
         seguimientos[c.numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: c.seg.intentos };
         guardarSeguimiento(c.numero);
@@ -3098,6 +3147,29 @@ async function manejarEventoLeadgen(value) {
         metadata: { leadgen_id: leadgenId }
       });
       console.log('🔗 Formulario vinculado a WhatsApp — leadgen_id=' + leadgenId + ' → lead_id=' + leadVinculado.id);
+
+      // 🆕 Etapa 2, punto 2 (3 ago 2026) — intención de compra declarada en
+      // el formulario, persistida para usarse más adelante en
+      // procesarMensaje() cuando se active el primer saludo_sin_respuesta
+      // (ver VENTANA_REACTIVACION_POR_INTENCION). "inmediatamente" además
+      // dispara una alerta a Lili YA, sin esperar a que el saludo quede sin
+      // respuesta — es la única categoría que pide atención prioritaria.
+      // Aislado en su propio try/catch: un fallo aquí NUNCA debe revertir
+      // la vinculación que ya quedó exitosa arriba (estado_vinculacion ya
+      // es 'VINCULADO' — este paso es un enriquecimiento adicional, no una
+      // condición para el éxito de la vinculación).
+      try {
+        var nivelIntencion = detectarIntencionCompraFormulario(fieldData);
+        if (nivelIntencion) {
+          await pool.query('UPDATE leads SET buy_intent = $2, updated_at = NOW() WHERE id = $1', [leadVinculado.id, nivelIntencion]);
+          console.log('🎯 Intención de compra detectada para lead ' + leadVinculado.id + ': ' + nivelIntencion);
+          if (nivelIntencion === 'inmediatamente') {
+            notificarLili(telefono, 'Este lead marcó "inmediatamente" en el formulario — quiere comprar ya. Prioriza este chat.');
+          }
+        }
+      } catch (eIntencion) {
+        console.error('Error guardando intención de compra para lead ' + leadVinculado.id + ':', eIntencion.message);
+      }
     } else {
       await pool.query(
         'UPDATE lead_form_submissions SET estado_vinculacion = \'FALLIDO\', updated_at = NOW() WHERE id = $1',
@@ -3200,6 +3272,32 @@ function detectarProductoFormulario(fieldData) {
     return (campo.name || '') + ' ' + valores;
   });
   return detectarProductoPorTexto(textos);
+}
+
+// 🆕 Etapa 2, punto 2 (3 ago 2026) — cadencia de seguimiento según la
+// intención de compra declarada en el formulario. Campo y valores
+// confirmados con datos reales (Lili, 3 ago 2026) — nombre exacto del
+// campo `¿cuándo_te_gustaría_comprarla?`, 4 valores posibles. Nunca
+// adivina: si el campo no está o el valor no es uno de los 4 conocidos,
+// devuelve null (cadencia por defecto).
+var NOMBRE_CAMPO_INTENCION_COMPRA = '¿cuándo_te_gustaría_comprarla?';
+var NIVELES_INTENCION_COMPRA_VALIDOS = [
+  'inmediatamente',
+  'en_los_próximos_15_días',
+  'durante_este_mes',
+  'en_1_o_2_meses'
+];
+
+function detectarIntencionCompraFormulario(fieldData) {
+  if (!Array.isArray(fieldData)) return null;
+  for (var i = 0; i < fieldData.length; i++) {
+    var campo = fieldData[i];
+    if (!campo || !campo.name) continue;
+    if (String(campo.name).toLowerCase().trim() !== NOMBRE_CAMPO_INTENCION_COMPRA) continue;
+    var valor = Array.isArray(campo.values) && campo.values[0] ? String(campo.values[0]).toLowerCase().trim() : null;
+    if (valor && NIVELES_INTENCION_COMPRA_VALIDOS.indexOf(valor) !== -1) return valor;
+  }
+  return null;
 }
 
 // Convierte field_data crudo (array de {name, values} de la Graph API) en
@@ -3678,7 +3776,12 @@ async function manejarCotizacionRepisa(from, texto, tag, systemConContexto, mens
       // Este flujo (manejarCotizacionRepisa) SOLO existe para cotizaciones de
       // Repisa Flotante (ver resolverPrecioRepisa/tag.largoCm arriba) — el
       // producto aquí nunca es ambiguo, no hace falta resolverProductoParaFotos.
-      seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: 'Repisa Flotante' };
+      // nivelIntencion queda null a propósito: esta función no recibe leadId
+      // (solo from/texto/tag), así que no tiene forma barata de consultar
+      // leads.buy_intent sin agregar un parámetro nuevo a los 3 call sites —
+      // se acepta la cadencia por defecto aquí (simplificación deliberada,
+      // caso poco frecuente: ya se le dio un precio real, no es un lead frío).
+      seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: 'Repisa Flotante', nivelIntencion: null };
       guardarSeguimiento(from);
     }
 
@@ -3753,9 +3856,20 @@ function procesarMensaje(from, texto, leadId, referralData) {
       })
     : Promise.resolve(null);
 
-  Promise.all([promesaFormulario, promesaProductoPersistido]).then(function(contextosLead) {
+  // 🆕 Etapa 2, punto 2 — intención de compra del formulario, guardada por
+  // manejarEventoLeadgen(). Solo importa para el primer saludo_sin_respuesta
+  // (ver más abajo, dónde se usa) — el resto del flujo la ignora.
+  var promesaIntencionCompra = leadId
+    ? obtenerIntencionCompraLead(leadId).catch(function(e) {
+        console.error('Error buscando intención de compra para lead ' + leadId + ':', e.message);
+        return null;
+      })
+    : Promise.resolve(null);
+
+  Promise.all([promesaFormulario, promesaProductoPersistido, promesaIntencionCompra]).then(function(contextosLead) {
   var formularioVinculado = contextosLead[0];
   var productoPersistido = contextosLead[1];
+  var intencionCompraPersistida = contextosLead[2];
   var bloqueFormulario = formularioVinculado ? formatearRespuestasFormulario(formularioVinculado) : null;
   var productoFormularioParaFotos = formularioVinculado
     ? detectarProductoFormulario(formularioVinculado.field_data || [])
@@ -3952,7 +4066,7 @@ function procesarMensaje(from, texto, leadId, referralData) {
       console.log('Escalado. Numero pausado: ' + from);
     } else {
       if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
-        seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotos };
+        seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotos, nivelIntencion: intencionCompraPersistida };
         guardarSeguimiento(from);
       }
     }
@@ -4018,7 +4132,7 @@ function procesarMensaje(from, texto, leadId, referralData) {
                 productoContextoOrigen: productoFormularioParaFotos || productoReferral,
                 productoPersistido: productoPersistido
               });
-              seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotosReintento };
+              seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotosReintento, nivelIntencion: intencionCompraPersistida };
               guardarSeguimiento(from);
             }
           }
@@ -4267,6 +4381,15 @@ async function obtenerProductoPersistidoLead(leadId) {
   return r.rows[0] && r.rows[0].product ? r.rows[0].product : null;
 }
 
+// 🆕 Etapa 2, punto 2 — intención de compra guardada por
+// manejarEventoLeadgen() (leads.buy_intent), leída aquí para propagarla al
+// primer seguimiento saludo_sin_respuesta que cree procesarMensaje().
+async function obtenerIntencionCompraLead(leadId) {
+  if (!leadId) return null;
+  var r = await pool.query('SELECT buy_intent FROM leads WHERE id = $1', [leadId]);
+  return r.rows[0] && r.rows[0].buy_intent ? r.rows[0].buy_intent : null;
+}
+
 function guardarProductoPersistidoLead(leadId, producto) {
   if (!leadId || !FOTOS_POR_PRODUCTO[producto]) return Promise.resolve(false);
   return pool.query(
@@ -4474,6 +4597,9 @@ app.infoProductoSeguimiento = infoProductoSeguimiento;
 app.activarSeguimiento = activarSeguimiento;
 app.guardarSeguimiento = guardarSeguimiento;
 app.detectarMensajeDuplicado = detectarMensajeDuplicado;
+app.detectarIntencionCompraFormulario = detectarIntencionCompraFormulario;
+app.ventanaReactivacion = ventanaReactivacion;
+app.obtenerIntencionCompraLead = obtenerIntencionCompraLead;
 app.liberarLockSiLoReclamamos = liberarLockSiLoReclamamos;
 app.capturarMensajeCRM = capturarMensajeCRM;
 app.capturarReferral = capturarReferral;
