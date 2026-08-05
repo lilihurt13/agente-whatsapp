@@ -1,6 +1,6 @@
 # DOCUMENTO MAESTRO — Proyecto Olivia (Hecho por Lili)
 
-**Última actualización:** 3 de agosto de 2026
+**Última actualización:** 5 de agosto de 2026
 **Propósito de este documento:** ser el punto de partida para CUALQUIER asistente de IA nuevo (Claude Code, ChatGPT Codex, o cualquier otro) que retome este proyecto. Si estás retomando el trabajo en una sesión nueva o con una herramienta distinta, pega este documento completo al inicio antes de pedir cualquier cambio. Súbelo también a `docs/OLIVIA_DOCUMENTO_MAESTRO.md` en el repositorio para que quede accesible desde GitHub, no solo en un chat de Claude.
 
 ---
@@ -261,6 +261,18 @@ Pruebas: `test/cadencia-intencion-compra.test.js` (8 casos). 240/240 pruebas tot
 **Mitigación desplegada — feature flag `REACTIVACION_12_19_ENABLED`:** mientras se corrige el resto del sistema de seguimiento (texto "repisa" hardcodeado sin importar el producto — ver Punto 1 del diagnóstico en `docs/PENDIENTES.md`), el cron de reactivación de 12pm/7pm (`whatsapp_agent.js`, cerca de la línea 1086) queda **apagado por defecto** — mismo patrón que `COTIZADOR_REPISAS_V2_ENABLED` (variable ausente o distinta de `'true'` = apagado). Se activa poniendo `REACTIVACION_12_19_ENABLED=true` en Railway (requiere redeploy). El cron horario de seguimiento (`esperando_info`/`esperando_decision`/`cotizacion_enviada`, otro `setInterval` distinto) y las respuestas en tiempo real de Olivia **no se tocaron** — siguen funcionando normal. Pruebas: `test/reactivacion-1219-flag.test.js` (3 casos: default apagado, valores no-`'true'` apagado, `'true'` exacto activa).
 
 **Pendiente:** implementar el resto del diseño de Fase 2 (producto real en los mensajes de seguimiento, guard síncrono de la condición de carrera, notificación a Lili que no dependa de `message.from`, etc. — diagnóstico completo y diseño en la conversación de auditoría del 2 ago, resumen en `docs/PENDIENTES.md`) antes de volver a activar `REACTIVACION_12_19_ENABLED`.
+
+### 6.5 Incidente — lead real "Lina De Brigard" no recibió respuesta (5 ago 2026)
+
+**Qué pasó:** llegó un lead por formulario a las 11:13 (hora Colombia). Investigado en Railway/Postgres (solo lectura): `manejarEventoLeadgen()` se ejecutó correctamente de punta a punta (lead creado, formulario vinculado, intención de compra detectada, Page Access Token del fallback manual funcionando bien). 2 segundos después llegó el webhook del mensaje de chat real de la clienta, pero `resolverNumeroRemitente()` no pudo extraer número de NINGUNA de las dos fuentes (`message.from` ni `value.contacts[0].wa_id`) — el mensaje se descartó por el guard de la Etapa 1 (`tipoDeMensajeEsManejado`), sin guardarse en `messages` y sin llegar nunca a `procesarMensaje()`/Claude. Confirmado con consulta a Postgres: cero filas en `messages` para esa ventana de tiempo — la falla no dejó ningún rastro persistente de la forma real del payload de Meta, haciendo imposible diagnosticar la causa exacta después del hecho.
+
+**Fix — logging + persistencia del payload cuando falla la resolución de número:**
+- `sanitizarPayloadWebhook(obj)` (función pura, recursiva): redacta cualquier clave que luzca como token/secret/password/api_key en cualquier nivel de anidamiento — capa defensiva adicional, no mitigación de un riesgo ya observado (`docs/PHASE_1A_PRIVACY.md` ya confirmó que el cuerpo de un webhook de Meta nunca ha traído tokens).
+- Dentro del bloque `!tipoDeMensajeManejado` del webhook, se distingue el sub-caso `!numeroResuelto` (razón: falla de resolución de número, no tipo de mensaje no soportado) y ahí se loguea completo (`console.error`) el payload sanitizado (`messaging_product`, `metadata`, `contacts`, `messages`) — única excepción documentada a la regla de "nunca loguear el payload completo" (ver `docs/PHASE_1A_PRIVACY.md`), porque este es justo el caso donde la falta de detalle impide diagnosticar.
+- Se persiste también en `lead_events` como **`MESSAGE_UNRESOLVABLE`** (sin `lead_id` — nunca hubo con quién asociarlo), con `metadata.payload` = el mismo payload sanitizado. **Rompe aún más el catálogo cerrado de la Fase 1A (Paso 10)**: ya eran 11 eventos desde `DUPLICATE_MESSAGE_DETECTED` (Etapa 1), ahora son 12.
+- **Revisado (no implementado como fallback automático):** se investigó si existe algún otro campo estándar del payload de WhatsApp Cloud API que pueda traer el número del remitente además de `messages[].from` y `contacts[0].wa_id`. No se encontró ninguno documentado por Meta. El único campo adyacente conocido, `messages[].context.from`, identifica al remitente del mensaje **citado/respondido**, no al remitente actual — usarlo como respaldo automático arriesgaría asociar el mensaje al lead equivocado, un error peor que descartarlo. Queda como campo a revisar manualmente si esta nueva persistencia captura un payload real con este patrón.
+- Pruebas: `test/message-unresolvable-logging.test.js` (nuevo, 5 pruebas para `sanitizarPayloadWebhook`). 245/245 pruebas totales pasan.
+- **Pendiente:** la próxima vez que `MESSAGE_UNRESOLVABLE` se dispare con un lead real, revisar `metadata.payload` en `lead_events` para ver la forma exacta del payload y decidir si hace falta una tercera fuente de resolución.
 
 ---
 

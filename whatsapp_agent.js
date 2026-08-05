@@ -78,6 +78,30 @@ function resolverNumeroRemitente(message, contacts) {
   return null;
 }
 
+// 🆕 (5 ago 2026) — caso real "Lina De Brigard": cuando resolverNumeroRemitente()
+// no logra extraer un número, el mensaje se descarta sin dejar ningún rastro
+// persistente de la forma real del payload, lo que hace imposible diagnosticar
+// por qué falló después del hecho (ver investigación en Railway/Postgres, sin
+// fila en `messages` para reconstruir). Este payload SÍ se loguea/persiste
+// completo (a diferencia del resto del webhook, ver docs/PHASE_1A_PRIVACY.md)
+// porque es justo el caso donde la falta de detalle impide el diagnóstico.
+// Redacta por si acaso cualquier clave que luzca como token/secret — nunca se
+// ha visto un token en el cuerpo de un webhook de Meta (confirmado en
+// PHASE_1A_PRIVACY.md), esto es una capa defensiva adicional, no la mitigación
+// de un riesgo ya observado.
+var PATRON_CAMPO_SENSIBLE = /token|secret|authorization|api[_-]?key|password/i;
+function sanitizarPayloadWebhook(obj) {
+  if (Array.isArray(obj)) return obj.map(sanitizarPayloadWebhook);
+  if (obj && typeof obj === 'object') {
+    var limpio = {};
+    Object.keys(obj).forEach(function(clave) {
+      limpio[clave] = PATRON_CAMPO_SENSIBLE.test(clave) ? '[REDACTADO]' : sanitizarPayloadWebhook(obj[clave]);
+    });
+    return limpio;
+  }
+  return obj;
+}
+
 // Único lugar que decide si un mensaje entrante de WhatsApp va a ser
 // procesado por alguna de las ramas del webhook (texto saliente de Lili,
 // texto entrante, o media entrante). Antes de esto, un message.type fuera
@@ -3660,6 +3684,32 @@ app.post('/webhook', function(req, res) {
             '. Campos presentes en el mensaje: ' + camposPresentes +
             '. Revísalo manualmente — no se guardó ni se respondió automáticamente.';
           notificarLili(numeroResuelto || 'SIN_NUMERO_IDENTIFICABLE', motivoAlerta);
+
+          // 🆕 (5 ago 2026) — caso real "Lina De Brigard": resolverNumeroRemitente()
+          // no pudo extraer número de NINGUNA de las dos fuentes (message.from ni
+          // contacts[0].wa_id) para un mensaje que de otro modo sí se habría
+          // manejado. Se distingue de "tipo de mensaje no soportado" (arriba, donde
+          // sí puede haber numeroResuelto) porque la causa y el remedio son
+          // distintos: aquí el problema es la forma del payload, no un tipo de
+          // mensaje nuevo por soportar. Se persiste en lead_events (sin lead_id —
+          // nunca tuvimos con quién asociarlo) para que sobreviva más allá de los
+          // logs efímeros de Railway y se pueda inspeccionar la forma exacta del
+          // payload la próxima vez que esto ocurra.
+          if (!numeroResuelto) {
+            var payloadSanitizado = sanitizarPayloadWebhook({
+              messaging_product: value.messaging_product,
+              metadata: value.metadata,
+              contacts: value.contacts,
+              messages: value.messages
+            });
+            console.error('🔎 Payload crudo (número no resuelto, message_id=' + (message.id || 'desconocido') + '): ' + JSON.stringify(payloadSanitizado));
+            registrarEventoLead(null, 'MESSAGE_UNRESOLVABLE', {
+              actor: 'SYSTEM',
+              source: 'webhook',
+              whatsappMessageId: message.id || null,
+              metadata: { message_type: message.type || null, payload: payloadSanitizado }
+            });
+          }
         }
       }
     }
@@ -4590,6 +4640,7 @@ app.agregarMensaje = agregarMensaje;
 app.obtenerOCrearLead = obtenerOCrearLead;
 app.tipoDeMensajeEsManejado = tipoDeMensajeEsManejado;
 app.resolverNumeroRemitente = resolverNumeroRemitente;
+app.sanitizarPayloadWebhook = sanitizarPayloadWebhook;
 app.reclamarLockProcesando = reclamarLockProcesando;
 app.getMensajeSeguimiento = getMensajeSeguimiento;
 app.mensajeReactivacion = mensajeReactivacion;
