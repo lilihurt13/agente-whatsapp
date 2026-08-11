@@ -1,5 +1,29 @@
 # Pendientes — no urgentes, revisar en sesión futura
 
+## Cerrado — Bug producto formulario: usar form_name como fallback (11 ago 2026)
+
+**Cerrado (11 ago 2026).** `detectarProductoFormulario()` solo buscaba palabras
+clave en los valores del `field_data`. El formulario de Mesa Auxiliar tiene
+respuestas como `necesito_ayuda_para_elegir` y `más_adelante` — ninguna
+contiene "mesa" ni "auxiliar", así que la función devolvía NULL aunque el
+formulario fuera claramente de Mesa Auxiliar.
+
+**Implementado:**
+- Graph API fetch del leadgen ahora pide `fields: 'field_data,form'` para
+  obtener el nombre del formulario (ej. `"Mesa Auxiliar"`).
+- Nueva columna `form_name TEXT` en `lead_form_submissions` (ALTER TABLE IF
+  NOT EXISTS al arranque) — se puebla junto con `field_data`.
+- `detectarProductoFormulario(fieldData, formName)` acepta un segundo
+  argumento opcional. Si el análisis de `field_data` no encuentra producto,
+  busca en `formName` como último recurso.
+- `formatearRespuestasFormulario()` y el cálculo de `productoFormularioParaFotos`
+  pasan `formularioVinculado.form_name` al nuevo argumento.
+- 248/248 tests en verde (sin tests nuevos — la función pura ya estaba cubierta).
+
+**Nota:** este fix aplica a formularios NUEVOS. Carolina Salazar (573007863757)
+ya tiene su `form_name = null` en la fila existente — para corregirla en
+producción actualizar manualmente con el nombre real del formulario.
+
 ## Cerrado — 5ª opción de intención de compra "Más adelante" (11 ago 2026)
 
 **Cerrado (11 ago 2026).** El formulario de Lead Ads tiene una 5ª opción en

@@ -769,6 +769,7 @@ async function inicializarBD() {
     // formulario ("¿cuándo_te_gustaría_comprarla?"), persistida en el lead
     // para sobrevivir hasta que se active el primer saludo_sin_respuesta.
     await pool.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS buy_intent TEXT');
+    await pool.query('ALTER TABLE lead_form_submissions ADD COLUMN IF NOT EXISTS form_name TEXT');
 
     await pool.query(
       'CREATE TABLE IF NOT EXISTS messages (' +
@@ -3139,15 +3140,16 @@ async function manejarEventoLeadgen(value) {
     var resp = await axios.get(
       'https://graph.facebook.com/v21.0/' + leadgenId,
       {
-        params: { fields: 'field_data' },
+        params: { fields: 'field_data,form' },
         headers: { Authorization: 'Bearer ' + pageAccessToken }
       }
     );
     var fieldData = resp.data.field_data || [];
+    var formName = (resp.data.form && resp.data.form.name) ? resp.data.form.name : null;
 
     await pool.query(
-      'UPDATE lead_form_submissions SET field_data = $1, updated_at = NOW() WHERE id = $2',
-      [JSON.stringify(fieldData), submissionId]
+      'UPDATE lead_form_submissions SET field_data = $1, form_name = $2, updated_at = NOW() WHERE id = $3',
+      [JSON.stringify(fieldData), formName, submissionId]
     );
     registrarEventoLead(null, 'LEAD_FORM_DATA_RETRIEVED', {
       actor: 'SYSTEM',
@@ -3287,7 +3289,7 @@ function detectarProductoPorTexto(textos) {
 // respaldo. Evita que un `name` genérico gane por casualidad frente a un
 // `value` que sí nombra el producto explícitamente, sin perder la
 // detección de hoy para formularios cuyo `name` no sea informativo.
-function detectarProductoFormulario(fieldData) {
+function detectarProductoFormulario(fieldData, formName) {
   if (!Array.isArray(fieldData)) return null;
 
   var nombres = fieldData.map(function(campo) { return campo.name || ''; });
@@ -3298,7 +3300,11 @@ function detectarProductoFormulario(fieldData) {
     var valores = Array.isArray(campo.values) ? campo.values.join(' ') : '';
     return (campo.name || '') + ' ' + valores;
   });
-  return detectarProductoPorTexto(textos);
+  var porValores = detectarProductoPorTexto(textos);
+  if (porValores) return porValores;
+
+  if (formName) return detectarProductoPorTexto([formName]);
+  return null;
 }
 
 // 🆕 Etapa 2, punto 2 (3 ago 2026) — cadencia de seguimiento según la
@@ -3336,7 +3342,7 @@ function formatearRespuestasFormulario(submission) {
   var fieldData = submission.field_data;
   if (!Array.isArray(fieldData) || fieldData.length === 0) return null;
 
-  var producto = detectarProductoFormulario(fieldData);
+  var producto = detectarProductoFormulario(fieldData, submission.form_name || null);
   var lineas = fieldData
     .filter(function(campo) { return campo.name !== 'phone_number' && campo.name !== 'full_name'; })
     .map(function(campo) {
@@ -3926,7 +3932,7 @@ function procesarMensaje(from, texto, leadId, referralData) {
   var intencionCompraPersistida = contextosLead[2];
   var bloqueFormulario = formularioVinculado ? formatearRespuestasFormulario(formularioVinculado) : null;
   var productoFormularioParaFotos = formularioVinculado
-    ? detectarProductoFormulario(formularioVinculado.field_data || [])
+    ? detectarProductoFormulario(formularioVinculado.field_data || [], formularioVinculado.form_name || null)
     : null;
   if (bloqueFormulario) {
     esPrimerMensaje = true; // asegura el envío de fotos también para leads de formulario
