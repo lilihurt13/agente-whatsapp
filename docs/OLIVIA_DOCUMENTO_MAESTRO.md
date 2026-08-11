@@ -215,6 +215,13 @@ Sospecha original de Lili: Olivia no está usando datos de formulario (ciudad, v
 
 **Pendiente (quedó abierto durante la auditoría, no bloqueante):** cola/debounce de mensajes en ráfaga (siguiente iteración del lock síncrono — hoy un segundo mensaje en ráfaga se guarda sin respuesta en esa pasada, comportamiento documentado no un bug), y crear/conectar una plantilla de WhatsApp genérica en Meta para que el seguimiento automático fuera de 24h también funcione para Mesa Auxiliar/Escritorio (hoy notifica a Lili en su lugar). Ver `docs/PENDIENTES.md`.
 
+**Fix adicional (11 ago 2026) — `form_name` como fallback para detección de producto:**
+El formulario de Mesa Auxiliar responde con valores genéricos (`necesito_ayuda_para_elegir`, `más_adelante`, ciudad) — ninguno contiene "mesa" ni "auxiliar". `detectarProductoFormulario()` devolvía NULL aunque el formulario fuera claramente de Mesa Auxiliar, causando que `resolverProductoParaFotos()` cayera al fallback y enviara fotos de repisa.
+- El fetch del leadgen ahora pide `fields: 'field_data,form'` para obtener el nombre del formulario.
+- Nueva columna `form_name TEXT` en `lead_form_submissions` (ALTER TABLE IF NOT EXISTS al arranque).
+- `detectarProductoFormulario(fieldData, formName)`: si `field_data` no tiene keywords, busca en `formName` como último recurso antes de devolver null.
+- Mergeado a `main` (commit `9933e7b`) el 11 de agosto de 2026.
+
 ---
 
 ## ETAPA 2 (3 ago 2026) — dos puntos aprobados, ambos COMPLETADOS
