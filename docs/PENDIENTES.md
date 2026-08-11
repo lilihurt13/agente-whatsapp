@@ -1,5 +1,30 @@
 # Pendientes — no urgentes, revisar en sesión futura
 
+## Cerrado — 5ª opción de intención de compra "Más adelante" (11 ago 2026)
+
+**Cerrado (11 ago 2026).** El formulario de Lead Ads tiene una 5ª opción en
+el campo `¿cuándo_te_gustaría_comprarla?` con el valor `"Más adelante"` que
+`detectarIntencionCompraFormulario()` no reconocía y dejaba caer al
+comportamiento por defecto (cadencia de 3-24h, igual que
+`en_los_próximos_15_días`).
+
+**Implementado:**
+- `'más_adelante'` agregado a `NIVELES_INTENCION_COMPRA_VALIDOS`.
+- La función normaliza espacios a guiones bajos antes de comparar (tanto
+  `"Más adelante"` como `"más_adelante"` retornan `'más_adelante'`).
+- Cuando `intencionCompraPersistida === 'más_adelante'`, el seguimiento se
+  guarda con `estado: 'reactivacion_futura'` en vez de `'saludo_sin_respuesta'`.
+  El cron de reactivación 12pm/7pm solo opera sobre `saludo_sin_respuesta`,
+  así que estos leads quedan fuera de toda reactivación automática.
+- `MAPA_LIFECYCLE_STAGE` mapea `reactivacion_futura → 'FUTURE_INTENT'`.
+- El panel de control muestra estos leads bajo la etiqueta
+  "📅 Dijeron 'más adelante' — sin seguimiento automático".
+- 8 nuevos tests agregados a `test/cadencia-intencion-compra.test.js`
+  (total: 248 tests, todos en verde).
+
+**Reactivación:** solo manual (Lili escribe directamente) o por campaña
+cuando se active una nueva.
+
 ## El formulario de Lead Ads no es obligatorio de facto
 
 **Confirmado (23 jul 2026):** aunque las 3 preguntas de cada uno de los 3

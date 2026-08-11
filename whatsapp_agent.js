@@ -2068,7 +2068,7 @@ app.get('/reporte', function(req, res) {
   Object.keys(seguimientos).forEach(function(n) { if (n !== LILI_NUMERO) todos[n] = true; });
 
   var cat = {
-    en_conversacion: [], saludo_sin_respuesta: [], esperando_info: [],
+    en_conversacion: [], saludo_sin_respuesta: [], reactivacion_futura: [], esperando_info: [],
     esperando_decision: [], cotizacion_enviada: [], cerrado_sin_respuesta: [], cerrado_venta: [], cerrado_perdido: []
   };
 
@@ -2083,6 +2083,7 @@ app.get('/reporte', function(req, res) {
   var etiquetas = {
     en_conversacion: '💬 En conversación / atendiendo',
     saludo_sin_respuesta: '👋 Saludaron y no respondieron',
+    reactivacion_futura: '📅 Dijeron "más adelante" — sin seguimiento automático',
     esperando_info: '📏 Prometieron enviar medidas/fotos',
     esperando_decision: '🖼️ Esperando decisión (fotos enviadas)',
     cotizacion_enviada: '📋 Cotización enviada',
@@ -2121,6 +2122,7 @@ function estadoLegible(numero) {
   if (!seg) return pausados[numero] ? '⏸️ Pausado (atendiendo)' : '💬 En conversación';
   var map = {
     saludo_sin_respuesta: '👋 Saludó sin responder',
+    reactivacion_futura: '📅 Más adelante',
     esperando_info: '📏 Prometió medidas/fotos',
     esperando_decision: '🖼️ Esperando decisión',
     cotizacion_enviada: '📋 Cotización enviada',
@@ -2730,6 +2732,7 @@ function escapeHtml(texto) {
 // No se borran ni renombran los estados antiguos — este mapa es de solo lectura.
 const MAPA_LIFECYCLE_STAGE = {
   saludo_sin_respuesta: 'CONTACTED',
+  reactivacion_futura: 'FUTURE_INTENT',
   esperando_info: 'WAITING_CUSTOMER_INFO',
   esperando_decision: 'WAITING_DECISION',
   cotizacion_enviada: 'QUOTED',
@@ -3309,7 +3312,8 @@ var NIVELES_INTENCION_COMPRA_VALIDOS = [
   'inmediatamente',
   'en_los_próximos_15_días',
   'durante_este_mes',
-  'en_1_o_2_meses'
+  'en_1_o_2_meses',
+  'más_adelante'
 ];
 
 function detectarIntencionCompraFormulario(fieldData) {
@@ -3318,7 +3322,7 @@ function detectarIntencionCompraFormulario(fieldData) {
     var campo = fieldData[i];
     if (!campo || !campo.name) continue;
     if (String(campo.name).toLowerCase().trim() !== NOMBRE_CAMPO_INTENCION_COMPRA) continue;
-    var valor = Array.isArray(campo.values) && campo.values[0] ? String(campo.values[0]).toLowerCase().trim() : null;
+    var valor = Array.isArray(campo.values) && campo.values[0] ? String(campo.values[0]).toLowerCase().trim().replace(/\s+/g, '_') : null;
     if (valor && NIVELES_INTENCION_COMPRA_VALIDOS.indexOf(valor) !== -1) return valor;
   }
   return null;
@@ -4116,7 +4120,8 @@ function procesarMensaje(from, texto, leadId, referralData) {
       console.log('Escalado. Numero pausado: ' + from);
     } else {
       if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
-        seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotos, nivelIntencion: intencionCompraPersistida };
+        var estadoSeguimiento = intencionCompraPersistida === 'más_adelante' ? 'reactivacion_futura' : 'saludo_sin_respuesta';
+        seguimientos[from] = { estado: estadoSeguimiento, timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotos, nivelIntencion: intencionCompraPersistida };
         guardarSeguimiento(from);
       }
     }
@@ -4182,7 +4187,8 @@ function procesarMensaje(from, texto, leadId, referralData) {
                 productoContextoOrigen: productoFormularioParaFotos || productoReferral,
                 productoPersistido: productoPersistido
               });
-              seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotosReintento, nivelIntencion: intencionCompraPersistida };
+              var estadoSeguimientoReintento = intencionCompraPersistida === 'más_adelante' ? 'reactivacion_futura' : 'saludo_sin_respuesta';
+              seguimientos[from] = { estado: estadoSeguimientoReintento, timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotosReintento, nivelIntencion: intencionCompraPersistida };
               guardarSeguimiento(from);
             }
           }
