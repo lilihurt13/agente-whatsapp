@@ -1,6 +1,6 @@
 # DOCUMENTO MAESTRO — Proyecto Olivia (Hecho por Lili)
 
-**Última actualización:** 29 de julio de 2026
+**Última actualización:** 5 de agosto de 2026
 **Propósito de este documento:** ser el punto de partida para CUALQUIER asistente de IA nuevo (Claude Code, ChatGPT Codex, o cualquier otro) que retome este proyecto. Si estás retomando el trabajo en una sesión nueva o con una herramienta distinta, pega este documento completo al inicio antes de pedir cualquier cambio. Súbelo también a `docs/OLIVIA_DOCUMENTO_MAESTRO.md` en el repositorio para que quede accesible desde GitHub, no solo en un chat de Claude.
 
 ---
@@ -56,7 +56,7 @@ El objetivo es que, sin importar qué herramienta de IA se use en el futuro, o s
    directos alerta después del cambio.
 
 ### 2.3 Variables de entorno críticas (Railway → Variables, nunca en código)
-`META_API_TOKEN`, `PHONE_NUMBER_ID`, `WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ANTHROPIC_API_KEY`, `CONTROL_TOKEN`, `LILI_NUMERO`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_UPLOAD_PRESET`, `DATABASE_URL`/`DATABASE_PUBLIC_URL`, y **`COTIZADOR_REPISAS_V2_ENABLED`** (feature flag, ver sección 5).
+`META_API_TOKEN`, `PHONE_NUMBER_ID`, `WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `ANTHROPIC_API_KEY`, `CONTROL_TOKEN`, `LILI_NUMERO`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_UPLOAD_PRESET`, `DATABASE_URL`/`DATABASE_PUBLIC_URL`, `COTIZADOR_REPISAS_V2_ENABLED` (feature flag, ver sección 5), `META_APP_ID` (opcional, default hardcodeado — App ID de Meta, público, no secreto), y **`PAGE_ACCESS_TOKEN`** (fallback manual de la Etapa 0 de Lead Ads, ver sección 6.3 — token de página de larga duración puesto a mano, expira ~2 de octubre de 2026).
 
 **Railway NO tiene backups automáticos** — antes de cualquier migración de esquema se corre `scripts/backup_produccion.js` (exporta cada tabla a JSON).
 
@@ -174,31 +174,137 @@ Pruebas: `test/fix-catalogo-mesa-envio.test.js` (7, texto del prompt) + `test/fi
 
 **Mergeado a `main` (commit `b126f5f`, merge `40dd7e3`) y pusheado a `origin/main` el 2026-07-29. Deploy en Railway confirmado por Lili como exitoso.**
 
-### 6.3 El "formulario" de Lead Ads nunca fue un Instant Form real — CORREGIDO (30 julio)
+### 6.3 El formulario de Lead Ads parece no aportar nada — ETAPA 0 COMPLETADA (3 ago 2026)
+Sospecha original de Lili: Olivia no está usando datos de formulario (ciudad, versión) en conversaciones reales. **Causa raíz confirmada (2 ago 2026):** `manejarEventoLeadgen()` usaba `META_API_TOKEN` (un User Token) para leer `{leadgen_id}?fields=field_data`, pero ese endpoint necesita un **Page Access Token** con permiso `leads_retrieval` — el User Token nunca lo tuvo, sin importar el estado de Standard/Advanced Access.
 
-Diagnóstico completo hecho el 30 jul cruzando Meta Ads Manager, Graph API Explorer, Meta Business Suite y la base de datos de producción (partiendo de la sospecha original de Lili en la entrada anterior de esta sección).
+**Fix (Etapa 0, 3 ago 2026):**
+- `obtenerPageAccessToken()` deriva un Page Access Token al arranque llamando a `me/accounts` con `META_API_TOKEN`, y lo extiende a larga duración vía `fb_exchange_token` (necesita `META_APP_SECRET` + `META_APP_ID`).
+- **En producción, esa derivación automática falla** (`me/accounts` devuelve 0 páginas — el `META_API_TOKEN` actual no tiene permiso para listar páginas; pendiente diagnosticar por qué, ver sección 7). No bloquea nada: el fallo se loguea y el resto del servidor sigue funcionando igual (WhatsApp intacto).
+- **Fallback activo:** variable `PAGE_ACCESS_TOKEN` puesta a mano en Railway con un Page Access Token de larga duración ya generado (60 días, **expira aproximadamente el 2 de octubre de 2026** — hay que renovarlo antes de esa fecha o volverá a fallar en silencio). Si la derivación automática falla, `obtenerPageAccessToken()` usa este valor directamente.
+- **Verificado con lead real en producción (3 ago 2026):** `GET /{leadgen_id}` con el `pageAccessToken` resultante devolvió correctamente `field_data` y `created_time` del leadgen_id de Omaira Quintero (`2841838099548700`) — confirma que la Graph API de Lead Ads ya funciona de punta a punta con datos reales.
 
-**Hallazgo 1 — nunca hubo un Instant Form.** Lo que Lili había armado en la campaña `HPL | Leads WhatsApp | Muebles | Jul-Ago 2026` era un mensaje de bienvenida de WhatsApp (Click-to-WhatsApp) con preguntas escritas como texto — no un Instant Form / Lead Ads real. Por eso: la Biblioteca de Formularios de Meta estaba vacía, `lead_form_submissions` estaba vacía en producción (el evento `leadgen` nunca tenía de dónde salir), y cualquier cliente podía ignorar las preguntas y escribir texto libre porque técnicamente solo era el saludo del chat.
+**Etapa 1 — fallo silencioso del webhook cuando `message.from` falta — COMPLETADO (3 ago 2026):**
+- Causa: si `message.from` venía vacío/corrupto (caso real: lead "Yuly"), el mensaje caía entre todas las ramas del webhook sin loguear nada útil, y la alerta a Lili que se agregó el 29 jul tampoco disparaba porque su condición dependía de `message.from` (`if (message.from && ...)`) — exactamente el caso que fallaba.
+- Fix: `resolverNumeroRemitente(message, contacts)` (nueva función pura) intenta `message.from` y, si no es válido, cae a `value.contacts[0].wa_id` (Meta suele mandarlo en el mismo payload). Se descartó a propósito un tercer nivel de respaldo vía `leadgen` — Lili lo consideró demasiado frágil para correlacionar sin número. `tipoDeMensajeEsManejado()` ahora recibe el número ya resuelto en vez de leer `message.from` directamente.
+- La alerta a Lili para mensajes no manejados ya **no depende de que `message.from` exista** — siempre se dispara (salvo eco de nuestro propio `PHONE_NUMBER_ID`), con `message_id`, `timestamp` y los nombres de campos presentes en el mensaje (nunca el contenido). Si no hay número resuelto, usa el marcador `SIN_NUMERO_IDENTIFICABLE`.
+- Pruebas: `test/webhook-tipo-mensaje.test.js` actualizado (nueva firma de 3 parámetros) + 6 pruebas nuevas de `resolverNumeroRemitente`. 205/205 pruebas totales pasan.
+- **Mergeado a `main` (commit `244ba93`, merge `8cf3f10`) y pusheado el 3 de agosto de 2026.** Pendiente de confirmar con un caso real futuro que la alerta llegue a Lili cuando falte `message.from`.
 
-**Hallazgo 2 — la página tampoco estaba suscrita al webhook `leadgen`.** Verificado con `GET /111790491414012/subscribed_apps` (`data: []`). Activado con `POST /111790491414012/subscribed_apps?subscribed_fields=leadgen`, usando un token de página con `pages_manage_metadata` + `leads_retrieval` (agregados al caso de uso "Captar y administrar clientes potenciales" en el Dashboard de la app). Confirmado después con el mismo GET. También se activó "Acceso a clientes potenciales" en Meta Business Suite (Configuración → Integraciones → Acceso a clientes potenciales → CRM) para `Hecho por Lili WS Agent` y, después, para la integración de Google Sheets.
+**Etapa 1 (cont.) — condición de carrera en mensajes en ráfaga — LOCK SÍNCRONO COMPLETADO (3 ago 2026):**
+- Causa real (lead Fernando Escobar, 573014597175, 1 ago 11:58am): 3 mensajes en ráfaga de ~7s ("Bogotá", "¿Tendrás más fotos?", "Hola buen día"). El guard `procesando[from]` se reclamaba DENTRO del `.then()` de `capturarMensajeCRM()` — después de un round-trip async a la BD — así que dos mensajes en ráfaga pasaban el guard a la vez: uno se perdía en silencio, el otro disparaba un saludo genérico ignorando lo ya hablado. Misma arquitectura de carrera en la rama de texto (`whatsapp_agent.js` ~3317-3390) y en la de media entrante (~3396-3440).
+- Fix: `reclamarLockProcesando(numero)` / `liberarLockSiLoReclamamos(numero, yaHabiaMensajeEnProceso)` (funciones puras junto a `const procesando = {};`) mueven la reclamación al mismo tick **síncrono** del webhook, antes de cualquier `await`/promesa — no dentro del `.then()`.
+- **Mejora inmediata, no la solución completa** (aprobado por Lili tras corrección de diseño de ChatGPT): el lock evita la corrupción (nunca más un saludo genérico pisando una conversación en curso), pero un segundo mensaje en ráfaga se guarda en el historial sin generar respuesta en esa pasada — comportamiento determinista, documentado, no un bug. La solución completa (cola/debounce: agrupar mensajes consecutivos del mismo número en una ventana de 2-4s y responder una sola vez a todos juntos) **queda pendiente como siguiente iteración**.
+- Pruebas: `test/lock-sincrono-condicion-carrera.test.js` (nuevo, 5 pruebas) — incluye simulación exacta del caso real de 3 mensajes en ráfaga, confirmando que solo el primero dispararía `procesarMensaje()`. 210/210 pruebas totales pasan.
+- **Mergeado a `main` (commit `4bbbb4d`, merge `46d47db`) y pusheado el 3 de agosto de 2026.**
 
-**Fix — campaña nueva con Instant Forms reales:** `HPL | Leads Formulario | Muebles | Agosto 2026` (prueba hasta el 15 de agosto de 2026), reemplaza la campaña de WhatsApp anterior. *Nota aparte detectada de paso, no corregida porque la campaña quedó reemplazada:* el anuncio de Mesa Auxiliar de la campaña vieja tenía cargado el mensaje de bienvenida de Escritorio Flotante — revisar si se reutiliza esa plantilla más adelante.
+**Etapa 1 (cont.) — seguimiento consciente del producto — COMPLETADO (3 ago 2026):**
+- Causa: `seguimientos[numero]` nunca guardaba el producto real del lead — todos los mensajes de seguimiento (cron horario, cron de reactivación 12pm/7pm, `getMensajeSeguimiento()`, `mensajeReactivacion()`) tenían "repisa" hardcodeado, heredado de cuando Repisa Flotante era el único producto.
+- Fix: columna `seguimientos.producto` (persistida), `activarSeguimiento(numero, estado, producto)` (nunca pierde ni inventa — conserva el producto ya conocido si no se pasa uno nuevo), y los 3 sitios que escriben `seguimientos[from]` directamente ahora resuelven el producto con la misma jerarquía que ya usa `resolverProductoParaFotos()` para las fotos (formulario → confirmado por cliente → referral → producto activo persistido → neutro). `getMensajeSeguimiento()`/`mensajeReactivacion()` arman la frase con artículo/nombre/pronombre correctos por producto (`INFO_PRODUCTO_SEGUIMIENTO`); sin producto identificado usan frase neutra ("tu pedido") — **nunca "repisa" como fallback**. Verificado que con `producto='Repisa Flotante'` el texto es byte-idéntico al hardcodeado anterior (cero cambio para el único producto ya en producción).
+- **Decisión abierta que tomé y quedó pendiente de confirmar con Lili:** la plantilla de WhatsApp `seguimiento_repisa` (usada fuera de la ventana de 24h) tiene el texto de repisa fijo, sin variable, aprobado por Meta solo para ese producto — no se puede reusar para Mesa Auxiliar/Escritorio. Como no existe hoy una plantilla genérica, el cron horario ahora **notifica a Lili por Telegram para seguimiento manual** cuando `seg.producto` no es `'Repisa Flotante'`, en vez de mandar el producto equivocado o fallar en silencio. Si Lili ya tiene o crea una plantilla genérica aprobada en Meta, falta conectar su nombre exacto aquí.
+- Pruebas: `test/seguimiento-producto.test.js` (nuevo, 12 pruebas). 222/222 pruebas totales pasan.
+- **Mergeado a `main` (commit `231ee3e`, merge `7b2ec4f`) y pusheado el 3 de agosto de 2026.**
 
-Los 3 formularios (uno por producto) quedaron así:
-- **Tipo:** "Mayor grado de intención" (paso de confirmación) + entrega "Manual" (Meta no puede simplificar preguntas) — decisión explícita de Lili para filtrar curiosos, no maximizar volumen.
-- **Preguntas:** `Phone number` (sin renombrar — clave para que `extraerTelefonoDeFieldData()` lo reconozca) + `Full name` + preguntas de opción múltiple por producto (medida/versión, ciudad).
+**Etapa 1 (cont.) — deduplicación determinística de formulario repetido (caso Deissy) — COMPLETADO (3 ago 2026):**
+- Causa: cuando un cliente reenviaba el mismo texto (reenvío técnico del formulario, mismo número, mismo contenido), Olivia lo trataba como mensaje nuevo y repetía el saludo/pregunta ya respondidos.
+- Fix: `detectarMensajeDuplicado(historial, textoActual)` (función pura) compara el texto entrante **solo** contra el último mensaje `'user'` guardado en `conversaciones[from]` (no contra todo el historial) — si son idénticos Y ya hay una respuesta `'assistant'` después de ese mensaje anterior, es un reenvío. En `procesarMensaje()` se inyecta una nota al `systemConContexto` ("Este mensaje es idéntico a uno que el cliente ya envió antes... No reinicies el saludo ni repitas la misma pregunta") — **el mensaje NO se bloquea**, Claude lo sigue recibiendo con esa nota. Se excluyen a propósito los placeholders sintéticos de media (`"[El cliente envió una imagen]"`, etc.) porque dos fotos/audios *distintos* comparten ese mismo texto genérico — sin el guard, se habrían marcado falsamente como reenvíos entre sí.
+- **Rompe el catálogo cerrado de 10 eventos documentado en la Fase 1A (Paso 10):** se agrega `DUPLICATE_MESSAGE_DETECTED` como 11º evento en `lead_events`, a pedido explícito de este diseño. El catálogo ya NO es cerrado — cualquier sesión futura que dependa de esa lista fija debe saber que ahora son 11 eventos, no 10.
+- Pruebas: `test/dedup-mensaje-duplicado.test.js` (nuevo, 7 pruebas) — incluye el caso real Deissy, texto parecido-pero-no-idéntico (no dispara), sin respuesta previa (no dispara), y el guard de placeholders de media documentado explícitamente. 229/229 pruebas totales pasan.
+- **Mergeado y pusheado a `main` (commit `19adc69`) el 3 de agosto de 2026.**
+
+**Auditoría del 2 de agosto: CERRADA.** Los 5 hallazgos (fallo silencioso del webhook, condición de carrera, seguimiento genérico, formulario duplicado, y el bloqueo externo de `leads_retrieval` resuelto en Etapa 0) quedaron todos atendidos con lock síncrono/mejoras inmediatas donde aplicaba.
+
+**Pendiente (quedó abierto durante la auditoría, no bloqueante):** cola/debounce de mensajes en ráfaga (siguiente iteración del lock síncrono — hoy un segundo mensaje en ráfaga se guarda sin respuesta en esa pasada, comportamiento documentado no un bug), y crear/conectar una plantilla de WhatsApp genérica en Meta para que el seguimiento automático fuera de 24h también funcione para Mesa Auxiliar/Escritorio (hoy notifica a Lili en su lugar). Ver `docs/PENDIENTES.md`.
+
+**Fix adicional (11 ago 2026) — `form_name` como fallback para detección de producto:**
+El formulario de Mesa Auxiliar responde con valores genéricos (`necesito_ayuda_para_elegir`, `más_adelante`, ciudad) — ninguno contiene "mesa" ni "auxiliar". `detectarProductoFormulario()` devolvía NULL aunque el formulario fuera claramente de Mesa Auxiliar, causando que `resolverProductoParaFotos()` cayera al fallback y enviara fotos de repisa.
+- El fetch del leadgen ahora pide `fields: 'field_data,form'` para obtener el nombre del formulario.
+- Nueva columna `form_name TEXT` en `lead_form_submissions` (ALTER TABLE IF NOT EXISTS al arranque).
+- `detectarProductoFormulario(fieldData, formName)`: si `field_data` no tiene keywords, busca en `formName` como último recurso antes de devolver null.
+- Mergeado a `main` (commit `9933e7b`) el 11 de agosto de 2026.
+
+---
+
+## ETAPA 2 (3 ago 2026) — dos puntos aprobados, ambos COMPLETADOS
+
+### Punto 1 — regla de links/imágenes no vistos (caso real Alex)
+Alex compartió un link de Facebook y Olivia no debía asumir qué mostraba. Se agregó a `getSystemPrompt()`, junto a la regla ya existente de audio/archivo no visible: un link de texto (Facebook, Instagram, cualquier URL) recibe el mismo trato — reconocer, nunca describir/asumir contenido, escalar con `[ESCALAR]`. Se agregó además una **REGLA PERMANENTE**: si en cualquier punto de la conversación se escaló algo por no poder verlo (imagen ambigua, audio, archivo, o link), Olivia nunca debe afirmar después con seguridad qué contenía, ni asumir que una respuesta corta del cliente ("sí", "esos") lo confirma — sigue tratándolo como no visto hasta que Lili confirme el contenido. Texto exacto de Lili, sin parafrasear (contenido de cara al cliente).
+
+Pruebas: `test/regla-links-no-vistos.test.js` (3 casos, verifican presencia del texto exacto en el prompt). 232/232 pruebas totales pasan. **Mergeado y pusheado a `main` (commit `da843ac`, merge `ecdea19`) el 3 de agosto de 2026.**
+
+### Punto 2 — cadencia de seguimiento según intención de compra del formulario
+Campo real del formulario: `¿cuándo_te_gustaría_comprarla?`, con 5 valores: `inmediatamente`, `en_los_próximos_15_días`, `durante_este_mes`, `en_1_o_2_meses`, `más_adelante`.
+
+**Tiempos aprobados** (ventana de horas desde el último mensaje del lead, usada por el cron de reactivación 12pm/7pm — hoy desactivado por `REACTIVACION_12_19_ENABLED`, listo para cuando se active):
+
+| Intención | minHoras | maxHoras |
+|---|---|---|
+| inmediatamente | 3 | 24 |
+| en_los_próximos_15_días (= default sin intención conocida) | 3 | 24 |
+| durante_este_mes | 48 | 144 (6 días) |
+| en_1_o_2_meses | 120 (5 días) | 480 (20 días) |
+| más_adelante | — | — (sin reactivación automática) |
+
+**Implementación:**
+- `detectarIntencionCompraFormulario(fieldData)` extrae el valor exacto, nunca inventa. Normaliza espacios a guiones bajos (acepta tanto `"Más adelante"` como `"más_adelante"`).
+- `manejarEventoLeadgen()` persiste la intención en `leads.buy_intent` (nueva columna) al vincular el formulario, y si es `'inmediatamente'` dispara `notificarLili()` de inmediato (atención prioritaria, sin esperar a que el saludo quede sin respuesta) — aislado en su propio `try/catch` para que un fallo aquí nunca revierta una vinculación ya exitosa.
+- `procesarMensaje()` propaga la intención persistida al seguimiento. Si `nivelIntencion === 'más_adelante'`, el estado queda `'reactivacion_futura'` en vez de `'saludo_sin_respuesta'` — el cron de reactivación 12pm/7pm solo actúa sobre `saludo_sin_respuesta`, así que estos leads nunca reciben mensajes automáticos.
+- `ventanaReactivacion(nivelIntencion)` reemplaza la ventana fija `3-24h` del cron de reactivación por la tabla de arriba. Para `'más_adelante'` devuelve el default (nunca se alcanza ya que el cron saltea el estado `reactivacion_futura`).
+- `MAPA_LIFECYCLE_STAGE` mapea `reactivacion_futura → 'FUTURE_INTENT'`.
+- Panel de control muestra la etiqueta "📅 Dijeron 'más adelante' — sin seguimiento automático".
+
+**Problema técnico real encontrado al implementar (no estaba explícito en el diseño aprobado):** `durante_este_mes` y `en_1_o_2_meses` caen fuera de la ventana de 24h de WhatsApp desde su primer momento elegible — ahí no se puede mandar texto libre, solo una plantilla aprobada. Se reutilizó el mismo guard que ya existía en el cron horario (plantilla `seguimiento_repisa` solo si el producto es Repisa Flotante; si no, `notificarLili()` para seguimiento manual) — depende de la misma plantilla genérica pendiente que quedó abierta en Etapa 1.
+
+**Simplificación deliberada:** el flujo del cotizador de repisas (`manejarCotizacionRepisa()`) no recibe `leadId`, así que su `seguimientos[from]` queda con `nivelIntencion: null` (cadencia por defecto) — se aceptó por ser un caso poco frecuente (el lead ya recibió un precio real, no es un lead frío recién llegado).
+
+Pruebas originales: `test/cadencia-intencion-compra.test.js` (8 casos). 240/240 pruebas totales pasan. **Mergeado y pusheado a `main` (commit `7b08be9`) el 3 de agosto de 2026.**
+
+**Actualización 11 ago 2026:** se agregó la 5ª opción `más_adelante` (ver `docs/PENDIENTES.md` — "Cerrado — 5ª opción de intención de compra"). 8 tests nuevos, total 248/248 en verde.
+
+**Pendientes que quedan abiertos tras Etapa 2 (ninguno bloqueante):** cola/debounce de mensajes en ráfaga, plantilla de WhatsApp genérica para productos distintos a Repisa Flotante fuera de 24h (afecta tanto al seguimiento por producto como a esta cadencia por intención), y confirmar con leads reales que la alerta inmediata de "inmediatamente" y la cadencia de las 4 categorías funcionan como se espera una vez se reactive `REACTIVACION_12_19_ENABLED`.
+
+### 6.4 Incidente — `cmd=todo` en `/control` vació la tabla `pausados` completa (2 ago 2026)
+
+**Qué pasó:** se ejecutó `cmd=pausatodo` seguido de `cmd=todo` en `/control`. `cmd=todo` no solo quita la pausa global — también llama a `quitarTodosPausados()`, que hace `DELETE FROM pausados` sin condición. Efecto real: los ~126 números que estaban pausados manualmente (leads en "🔵 Atendiendo yo") quedaron sin protección — Olivia habría vuelto a responderles automáticamente.
+
+**Causa raíz de fondo:** `cmd=todo` mezcla dos cosas que deberían ser independientes — "quitar la pausa global" (`pausadoTodo=false`) y "reactivar todos los números pausados individualmente" (`quitarTodosPausados()`). Además, ninguna acción de `/control` (`pausa`, `reanudar`, `pausatodo`, `todo`, `cerrado_venta`, etc.) queda registrada en `lead_events` ni en ningún log — son completamente silenciosas, lo que hizo la reconstrucción muy difícil. **Pendiente de rediseño, no corregido todavía** — ver `docs/PENDIENTES.md`.
+
+**Reconstrucción:** no fue posible recuperar la lista completa de 126 (`lead_events` no tiene eventos de pausa; el log de arranque solo loguea el conteo, no los números; los comandos de `/control` no dejan rastro ni en logs de aplicación ni en logs HTTP — Railway no captura el query string). Se reconstruyeron 10 números con alta confianza cruzando tres señales independientes (logs de escalamiento automático desde el arranque del 30 jul, `leads.owner='LILI'`, y notas manuales) y se restauraron en `pausados` con un `INSERT ... ON CONFLICT DO NOTHING` (aprobado por Lili, ejecutado 2 ago 2026). **Quedan potencialmente ~116 números sin restaurar** — pendiente que Lili revise si Railway tiene point-in-time recovery en el plan de Postgres, o si recuerda otros números para agregar.
+
+**Mitigación desplegada — feature flag `REACTIVACION_12_19_ENABLED`:** mientras se corrige el resto del sistema de seguimiento (texto "repisa" hardcodeado sin importar el producto — ver Punto 1 del diagnóstico en `docs/PENDIENTES.md`), el cron de reactivación de 12pm/7pm (`whatsapp_agent.js`, cerca de la línea 1086) queda **apagado por defecto** — mismo patrón que `COTIZADOR_REPISAS_V2_ENABLED` (variable ausente o distinta de `'true'` = apagado). Se activa poniendo `REACTIVACION_12_19_ENABLED=true` en Railway (requiere redeploy). El cron horario de seguimiento (`esperando_info`/`esperando_decision`/`cotizacion_enviada`, otro `setInterval` distinto) y las respuestas en tiempo real de Olivia **no se tocaron** — siguen funcionando normal. Pruebas: `test/reactivacion-1219-flag.test.js` (3 casos: default apagado, valores no-`'true'` apagado, `'true'` exacto activa).
+
+**Pendiente:** implementar el resto del diseño de Fase 2 (producto real en los mensajes de seguimiento, guard síncrono de la condición de carrera, notificación a Lili que no dependa de `message.from`, etc. — diagnóstico completo y diseño en la conversación de auditoría del 2 ago, resumen en `docs/PENDIENTES.md`) antes de volver a activar `REACTIVACION_12_19_ENABLED`.
+
+### 6.5 Incidente — lead real "Lina De Brigard" no recibió respuesta (5 ago 2026)
+
+**Qué pasó:** llegó un lead por formulario a las 11:13 (hora Colombia). Investigado en Railway/Postgres (solo lectura): `manejarEventoLeadgen()` se ejecutó correctamente de punta a punta (lead creado, formulario vinculado, intención de compra detectada, Page Access Token del fallback manual funcionando bien). 2 segundos después llegó el webhook del mensaje de chat real de la clienta, pero `resolverNumeroRemitente()` no pudo extraer número de NINGUNA de las dos fuentes (`message.from` ni `value.contacts[0].wa_id`) — el mensaje se descartó por el guard de la Etapa 1 (`tipoDeMensajeEsManejado`), sin guardarse en `messages` y sin llegar nunca a `procesarMensaje()`/Claude. Confirmado con consulta a Postgres: cero filas en `messages` para esa ventana de tiempo — la falla no dejó ningún rastro persistente de la forma real del payload de Meta, haciendo imposible diagnosticar la causa exacta después del hecho.
+
+**Fix — logging + persistencia del payload cuando falla la resolución de número:**
+- `sanitizarPayloadWebhook(obj)` (función pura, recursiva): redacta cualquier clave que luzca como token/secret/password/api_key en cualquier nivel de anidamiento — capa defensiva adicional, no mitigación de un riesgo ya observado (`docs/PHASE_1A_PRIVACY.md` ya confirmó que el cuerpo de un webhook de Meta nunca ha traído tokens).
+- Dentro del bloque `!tipoDeMensajeManejado` del webhook, se distingue el sub-caso `!numeroResuelto` (razón: falla de resolución de número, no tipo de mensaje no soportado) y ahí se loguea completo (`console.error`) el payload sanitizado (`messaging_product`, `metadata`, `contacts`, `messages`) — única excepción documentada a la regla de "nunca loguear el payload completo" (ver `docs/PHASE_1A_PRIVACY.md`), porque este es justo el caso donde la falta de detalle impide diagnosticar.
+- Se persiste también en `lead_events` como **`MESSAGE_UNRESOLVABLE`** (sin `lead_id` — nunca hubo con quién asociarlo), con `metadata.payload` = el mismo payload sanitizado. **Rompe aún más el catálogo cerrado de la Fase 1A (Paso 10)**: ya eran 11 eventos desde `DUPLICATE_MESSAGE_DETECTED` (Etapa 1), ahora son 12.
+- **Revisado (no implementado como fallback automático):** se investigó si existe algún otro campo estándar del payload de WhatsApp Cloud API que pueda traer el número del remitente además de `messages[].from` y `contacts[0].wa_id`. No se encontró ninguno documentado por Meta. El único campo adyacente conocido, `messages[].context.from`, identifica al remitente del mensaje **citado/respondido**, no al remitente actual — usarlo como respaldo automático arriesgaría asociar el mensaje al lead equivocado, un error peor que descartarlo. Queda como campo a revisar manualmente si esta nueva persistencia captura un payload real con este patrón.
+- Pruebas: `test/message-unresolvable-logging.test.js` (nuevo, 5 pruebas para `sanitizarPayloadWebhook`). 245/245 pruebas totales pasan.
+- **Pendiente:** la próxima vez que `MESSAGE_UNRESOLVABLE` se dispare con un lead real, revisar `metadata.payload` en `lead_events` para ver la forma exacta del payload y decidir si hace falta una tercera fuente de resolución.
+
+### 6.6 Instant Forms reales creados y campaña de agosto publicada (30 jul 2026)
+
+Cronológicamente esto pasó **antes** de la Etapa 0 de la sección 6.3 (mismo día, 30 jul, que la sospecha original que dispara la Etapa 0) — se documenta aquí para no reordenar retroactivamente el resto de la sección.
+
+Diagnóstico hecho el 30 jul cruzando Meta Ads Manager, Graph API Explorer, Meta Business Suite y la base de datos de producción. **Hallazgo 1:** lo que Lili tenía armado en la campaña `HPL | Leads WhatsApp | Muebles | Jul-Ago 2026` nunca fue un Instant Form de Meta — era un mensaje de bienvenida de WhatsApp (Click-to-WhatsApp) con preguntas escritas como texto. Por eso la Biblioteca de Formularios estaba vacía y cualquier cliente podía ignorar las preguntas escribiendo texto libre. **Hallazgo 2:** la página tampoco estaba suscrita al webhook `leadgen` (`GET /111790491414012/subscribed_apps` devolvía `data: []`) — activado con `POST .../subscribed_apps?subscribed_fields=leadgen` usando un Page Access Token con `pages_manage_metadata` + `leads_retrieval`. También se activó "Acceso a clientes potenciales" en Meta Business Suite para `Hecho por Lili WS Agent` y para la integración de Google Sheets.
+
+**Fix:** se creó una campaña nueva con 3 Instant Forms reales (uno por producto), reemplazando la campaña de WhatsApp anterior:
+- **Campaña:** `HPL | Leads Formulario | Muebles | Agosto 2026`, prueba hasta el 15 de agosto de 2026.
+- **Tipo de formulario:** "Mayor grado de intención" (paso de confirmación) + entrega "Manual" (Meta no puede simplificar preguntas) — decisión explícita de Lili para filtrar curiosos, no maximizar volumen.
+- **Preguntas:** `Phone number` (sin renombrar, clave para `extraerTelefonoDeFieldData()`) + `Full name` + preguntas de opción múltiple por producto (medida/versión, ciudad).
 - **Política de privacidad:** `https://hechoporlili.co/politica-de-privacidad`.
-- **Finalización:** acción "Chatear en WhatsApp" (+57 333 4318777), con "Iniciar conversaciones en Messenger" desactivado a propósito.
-- **IDs:** Mesa Auxiliar `1350457547215019`, Escritorio Flotante `1555694689934261`, Repisa Flotante `804661716007515`.
-- **Respaldo:** Google Sheet "HPL - Leads Formulario - Respaldo", sincronización validada de punta a punta para Escritorio Flotante (lead de prueba real, columna `phone_number` correcta). **Sin confirmar** si quedó completa para Mesa Auxiliar y Repisa — ver pendientes abajo.
+- **Finalización:** acción "Chatear en WhatsApp" (+57 333 4318777), Messenger desactivado a propósito.
+- **IDs de los formularios:** Mesa Auxiliar `1350457547215019`, Escritorio Flotante `1555694689934261`, Repisa Flotante `804661716007515`.
+- **Respaldo:** Google Sheet "HPL - Leads Formulario - Respaldo" — validado de punta a punta para Escritorio Flotante (lead de prueba real). Sin confirmar si quedó completo para Mesa Auxiliar/Repisa (error de interfaz de Meta al repetir la validación manual).
+- **Conjunto de anuncios:** "Ubicación de la conversión" = Formularios instantáneos, objetivo "Maximizar el número de clientes potenciales calificados", CTA "Cotizar" en los 3 anuncios, presupuesto Advantage+ $15.000 COP/día, público heredado de la campaña anterior (Medellín + Envigado, +40km), pixel de Hecho por Lili conectado.
 
-**Configuración del conjunto de anuncios:** "Ubicación de la conversión" = Formularios instantáneos, objetivo de rendimiento "Maximizar el número de clientes potenciales calificados", CTA "Cotizar" en los 3 anuncios, presupuesto Advantage+ $15.000 COP/día, público heredado de la campaña anterior (Medellín + Envigado, +40km), pixel de Hecho por Lili conectado.
+*Nota aparte detectada de paso, no corregida porque la campaña quedó reemplazada:* el anuncio de Mesa Auxiliar de la campaña vieja tenía cargado el mensaje de bienvenida de Escritorio Flotante.
 
-**Pendiente de verificar (no bloquea el lanzamiento, campaña ya publicada):**
-1. Prueba real de punta a punta desde un teléfono sin el WhatsApp Business de Hecho por Lili abierto — la auto-prueba de Lili desde su computador (con ese WhatsApp Web ya abierto) se mostró como conversación consigo misma y Olivia no respondió; no se pudo confirmar si es solo un artefacto de la auto-prueba. El webhook `leadgen` a nivel de página sí está confirmado activo independientemente de esto.
-2. Confirmar si la sincronización de Google Sheets quedó completa para Mesa Auxiliar y Repisa (el asistente de configuración de Meta dio error de interfaz al repetir la validación manual para esos dos; se activaron por "crear integraciones automáticamente" pero sin lead de prueba real que lo confirme).
-
-**Plan de campaña:** corre como prueba hasta el 15 de agosto de 2026. Si los resultados son buenos, se extiende; si no, se revisa de nuevo (creativos, presupuesto, segmentación) antes de seguir invirtiendo.
+**Resultado final — ver sección 6.7 (revisión del 17 de agosto, campaña ya cerrada).**
 
 ---
 

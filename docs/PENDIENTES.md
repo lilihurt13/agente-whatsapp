@@ -2,29 +2,71 @@
 
 ## Cerrado (30 jul 2026) — el "formulario" nunca fue un Instant Form real, campaña nueva publicada
 
-**Resuelto.** Lo que sigue abajo (esta sección completa) queda como historial del diagnóstico. El
-detalle completo de la causa raíz, el fix y la configuración final vive en
-`docs/OLIVIA_DOCUMENTO_MAESTRO.md`, sección 6.3 — no se repite aquí para no duplicar.
+**Resuelto, y desde entonces la campaña ya corrió completa y terminó el 15 de agosto** (ver
+`docs/OLIVIA_DOCUMENTO_MAESTRO.md` sección 6.3 para el detalle completo de causa raíz y fix, y
+la revisión de métricas finales del 17 de agosto más abajo/en el maestro).
 
 Resumen: nunca hubo un Instant Form de Meta (era un mensaje de bienvenida de WhatsApp con
 preguntas en texto), y además la página no estaba suscrita al webhook `leadgen`. Se crearon 3
 Instant Forms reales (uno por producto) y se activó la suscripción de la página. Campaña nueva
 `HPL | Leads Formulario | Muebles | Agosto 2026` publicada el 30 jul, en prueba hasta el 15 de
-agosto de 2026.
+agosto de 2026 (ya cerrada — ver revisión de resultados del 17 ago).
 
-**Quedan 2 cosas por verificar (no bloquean la campaña, ya está corriendo):**
-1. Prueba real de punta a punta (Instant Form → WhatsApp → Olivia responde) desde un teléfono
-   que NO tenga abierto el WhatsApp Business de Hecho por Lili — la auto-prueba de Lili desde su
-   computador dio un falso negativo por conflicto de auto-mensaje (ver 6.3 para el detalle).
-2. Confirmar si el respaldo en Google Sheets ("HPL - Leads Formulario - Respaldo") quedó
-   sincronizado para los formularios de Mesa Auxiliar y Repisa — para Escritorio Flotante sí se
-   validó con un lead de prueba real; para los otros dos, el asistente de Meta dio un error de
-   interfaz al repetir la validación manual.
-
-Cuando se confirmen esas 2 cosas (o si la campaña ya trae leads reales que las confirman solas),
-esta sección se puede borrar.
+Las 2 verificaciones que habían quedado abiertas (prueba real desde teléfono externo, respaldo de
+Google Sheets para Mesa Auxiliar/Repisa) quedaron sin resolver directamente, pero el problema de
+fondo (lectura de leads por Olivia) se diagnosticó y corrigió por otra vía — ver el bloque de
+Etapa 0/1 del 2-3 ago en el documento maestro, sección 6.3.
 
 ---
+
+## Cerrado — Bug producto formulario: usar form_name como fallback (11 ago 2026)
+
+**Cerrado (11 ago 2026).** `detectarProductoFormulario()` solo buscaba palabras
+clave en los valores del `field_data`. El formulario de Mesa Auxiliar tiene
+respuestas como `necesito_ayuda_para_elegir` y `más_adelante` — ninguna
+contiene "mesa" ni "auxiliar", así que la función devolvía NULL aunque el
+formulario fuera claramente de Mesa Auxiliar.
+
+**Implementado:**
+- Graph API fetch del leadgen ahora pide `fields: 'field_data,form'` para
+  obtener el nombre del formulario (ej. `"Mesa Auxiliar"`).
+- Nueva columna `form_name TEXT` en `lead_form_submissions` (ALTER TABLE IF
+  NOT EXISTS al arranque) — se puebla junto con `field_data`.
+- `detectarProductoFormulario(fieldData, formName)` acepta un segundo
+  argumento opcional. Si el análisis de `field_data` no encuentra producto,
+  busca en `formName` como último recurso.
+- `formatearRespuestasFormulario()` y el cálculo de `productoFormularioParaFotos`
+  pasan `formularioVinculado.form_name` al nuevo argumento.
+- 248/248 tests en verde (sin tests nuevos — la función pura ya estaba cubierta).
+
+**Nota:** este fix aplica a formularios NUEVOS. Carolina Salazar (573007863757)
+ya tiene su `form_name = null` en la fila existente — para corregirla en
+producción actualizar manualmente con el nombre real del formulario.
+
+## Cerrado — 5ª opción de intención de compra "Más adelante" (11 ago 2026)
+
+**Cerrado (11 ago 2026).** El formulario de Lead Ads tiene una 5ª opción en
+el campo `¿cuándo_te_gustaría_comprarla?` con el valor `"Más adelante"` que
+`detectarIntencionCompraFormulario()` no reconocía y dejaba caer al
+comportamiento por defecto (cadencia de 3-24h, igual que
+`en_los_próximos_15_días`).
+
+**Implementado:**
+- `'más_adelante'` agregado a `NIVELES_INTENCION_COMPRA_VALIDOS`.
+- La función normaliza espacios a guiones bajos antes de comparar (tanto
+  `"Más adelante"` como `"más_adelante"` retornan `'más_adelante'`).
+- Cuando `intencionCompraPersistida === 'más_adelante'`, el seguimiento se
+  guarda con `estado: 'reactivacion_futura'` en vez de `'saludo_sin_respuesta'`.
+  El cron de reactivación 12pm/7pm solo opera sobre `saludo_sin_respuesta`,
+  así que estos leads quedan fuera de toda reactivación automática.
+- `MAPA_LIFECYCLE_STAGE` mapea `reactivacion_futura → 'FUTURE_INTENT'`.
+- El panel de control muestra estos leads bajo la etiqueta
+  "📅 Dijeron 'más adelante' — sin seguimiento automático".
+- 8 nuevos tests agregados a `test/cadencia-intencion-compra.test.js`
+  (total: 248 tests, todos en verde).
+
+**Reactivación:** solo manual (Lili escribe directamente) o por campaña
+cuando se active una nueva.
 
 ## Historial del diagnóstico original — El formulario de Lead Ads no es obligatorio de facto
 
@@ -254,3 +296,98 @@ fallidos de Meta. 6 pruebas nuevas en `test/webhook-tipo-mensaje.test.js`.
 un `message.type` no manejado, el aviso a Lili y el log `❌` sí aparecen
 (esta vez no se pudo reproducir el payload exacto del caso de María para
 confirmar cuál tipo específico lo causó — solo se cerró el hueco general).
+
+## Bloqueo externo — permiso `leads_retrieval` sin Advanced Access (Meta App Review)
+
+**Detectado (2 ago 2026), durante la auditoría de leads de formulario mal
+atendidos.** `manejarEventoLeadgen()` recibe correctamente el evento
+`leadgen` (webhook, ID de formulario, de anuncio, de página — confirmado
+en logs reales), pero la llamada a Graph API que trae las respuestas del
+formulario (`GET /{leadgen_id}?fields=field_data`, `whatsapp_agent.js`
+~línea 2843) falla siempre con `400 GraphMethodException code:100
+subcode:33`. **8 de 8 eventos leadgen recibidos desde el 31 de julio
+tienen `estado_vinculacion = 'FALLIDO'` en `lead_form_submissions`, sin
+ninguna excepción.**
+
+**Causa:** el token usado (`META_API_TOKEN`) no tiene el permiso
+`leads_retrieval` en Advanced Access — sigue en Standard Access, que solo
+sirve para formularios/Páginas de prueba, no para leads reales de
+clientes. Esto es 100% independiente del código: no hay ningún fix en
+`whatsapp_agent.js` que lo resuelva. El manejo de error ya está bien
+hecho (registra `FALLIDO`, loguea el error, no rompe nada más) — solo
+falta que Meta apruebe el permiso.
+
+**No bloquea el resto del trabajo.** Los bugs de código encontrados en la
+misma auditoría (fallo silencioso del webhook, condición de carrera,
+seguimiento genérico, formulario duplicado, alucinación de contenido no
+visto) son independientes de si `field_data` del formulario llega o no —
+se corrigen igual.
+
+**Acción en curso (Lili, iniciada 2 ago 2026):** trámite de Meta App
+Review para pasar `leads_retrieval` de Standard a Advanced Access. Pasos:
+
+1. Completar Meta Business Verification en el Business Manager dueño de
+   la app (si no está hecha ya — suele ser el paso que más tarda).
+2. App Dashboard → App Review → Permisos y funciones → `leads_retrieval`
+   → Solicitar Advanced Access. Junto con `leads_retrieval`, la doc
+   oficial de Meta pide también `pages_manage_ads`, `pages_read_engagement`,
+   `pages_show_list`, y `pages_manage_metadata` (por ir vía webhook, que
+   ya está configurado).
+3. Preparar el material de la solicitud (lo que más causa rechazo si
+   falta):
+   - Screencast mostrando un lead REAL de punta a punta: cliente completa
+     el formulario → llega el webhook → aparece en el sistema (no sirve
+     una pantalla de configuración vacía).
+   - Texto de caso de uso: qué campos del formulario se acceden, dónde se
+     guardan (`lead_form_submissions.field_data`), quién puede verlos.
+   - Política de privacidad que cubra explícitamente manejo/retención de
+     datos de leads.
+4. Enviar a revisión. Tiempo de aprobación no confirmado — depende de
+   Meta, revisar el estado directamente en el dashboard.
+
+**Mientras se aprueba:** se puede usar la Lead Ads Testing Tool del
+dashboard (formularios de prueba, cubiertos por Standard Access) para
+dejar todo el pipeline (webhook → Graph API → `lead_form_submissions`)
+probado de punta a punta, y de paso generar el material del screencast
+que Meta pide.
+
+## URGENTE — Rediseñar `/control` tras el incidente de `cmd=todo` (2 ago 2026)
+
+**Confirmado (2 ago 2026):** `cmd=todo` en `/control` mezcla "quitar pausa
+global" con `quitarTodosPausados()` (`DELETE FROM pausados` sin condición),
+borrando de un golpe todos los números pausados manualmente — no solo la
+pausa global. Vació ~126 filas; solo se pudieron reconstruir 10 con
+confianza razonable (cruzando logs de escalamiento desde el arranque del
+30 jul, `leads.owner='LILI'`, y `notas`) y restaurar por `INSERT` aprobado
+por Lili. El resto probablemente sigue perdido — ver
+`docs/OLIVIA_DOCUMENTO_MAESTRO.md` sección 6.4 para el detalle completo.
+
+**Causa raíz que falta corregir (no solo documentar):**
+1. `cmd=todo` debería separar "pausadoTodo=false" de "reactivar
+   individuales" — o al menos requerir una confirmación explícita distinta
+   para lo segundo, ya que son operaciones de impacto muy distinto.
+2. Ningún comando de `/control` deja rastro en `lead_events` ni en logs de
+   aplicación — son completamente silenciosos. Cualquier acción de
+   `/control` (`pausa`, `reanudar`, `pausatodo`, `todo`, `cerrado_venta`,
+   `cerrado_perdido`) debería registrar un evento (actor, número, comando,
+   timestamp) para que un incidente futuro sí se pueda reconstruir sin
+   depender de inferencias indirectas por logs.
+3. Evaluar si `pausados` necesita ON DELETE más seguro (soft-delete con
+   timestamp en vez de DELETE físico) para que un vaciado accidental sea
+   reversible sin reconstrucción manual.
+
+**Mitigación desplegada mientras se corrige lo anterior:** feature flag
+`REACTIVACION_12_19_ENABLED` (default apagado) apaga el cron de 12pm/7pm
+que le manda a cualquier lead pausado un mensaje automático de "repisa" —
+ver sección 6.4 del documento maestro. El cron horario de seguimiento y
+las respuestas en tiempo real de Olivia no se tocaron.
+
+**No cerrar este pendiente hasta:** (a) decidir y corregir el diseño de
+`cmd=todo`/`/control`, (b) confirmar con Lili si los ~116 números
+restantes se dan por perdidos o si aparece una vía de recuperación
+(point-in-time recovery de Postgres en Railway, o memoria de Lili).
+
+**Cuándo se puede cerrar este pendiente:** cuando `estado_vinculacion`
+empiece a salir `VINCULADO` (o el estado de éxito equivalente) en
+`lead_form_submissions` para un lead real nuevo — eso confirma que
+Advanced Access ya quedó activo.

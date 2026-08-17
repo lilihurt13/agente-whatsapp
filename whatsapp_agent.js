@@ -18,6 +18,15 @@ const META_API_TOKEN = process.env.META_API_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const META_APP_SECRET = process.env.META_APP_SECRET;
+// 🆕 ETAPA 0 (3 ago) — App ID de Meta, necesario para extender el Page
+// Access Token de corta a larga duración (ver obtenerPageAccessToken()).
+// No es secreto (los App IDs de Meta son públicos), por eso el default.
+const META_APP_ID = process.env.META_APP_ID || '1413208417309453';
+// 🆕 ETAPA 0 — FIX RÁPIDO (3 ago) — fallback manual si META_API_TOKEN no
+// tiene permiso para listar páginas (me/accounts devuelve 0 páginas). Se
+// pone a mano en Railway un Page Access Token ya generado — ver
+// obtenerPageAccessToken() para el orden de intentos.
+const PAGE_ACCESS_TOKEN_ENV = process.env.PAGE_ACCESS_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const CONTROL_TOKEN = process.env.CONTROL_TOKEN;
 const LILI_NUMERO = process.env.LILI_NUMERO;
@@ -38,8 +47,59 @@ function cotizadorRepisasV2Habilitado() {
   return process.env.COTIZADOR_REPISAS_V2_ENABLED === 'true';
 }
 
+// 🆕 FEATURE FLAG (2 ago 2026) — mismo patrón exacto que
+// cotizadorRepisasV2Habilitado(): por defecto (variable ausente o distinta
+// de 'true') el cron de reactivación de 12pm/7pm (más abajo, el segundo
+// setInterval) NO envía nada — Olivia sigue respondiendo en tiempo real
+// normalmente, esto solo apaga ese cron puntual. Se activa poniendo
+// REACTIVACION_12_19_ENABLED=true en las variables de Railway (requiere
+// redeploy). Se agregó tras el incidente del 2 de agosto donde cmd=todo en
+// /control vació la tabla `pausados` — mientras se audita y corrige el
+// resto del sistema de seguimiento (texto hardcodeado de "repisa" para
+// cualquier producto, ver docs/PENDIENTES.md), este cron queda apagado por
+// defecto para no volver a mandar mensajes automáticos incorrectos.
+function reactivacion1219Habilitada() {
+  return process.env.REACTIVACION_12_19_ENABLED === 'true';
+}
+
 function esNumeroValido(n) {
   return typeof n === 'string' && /^\d{5,20}$/.test(n);
+}
+
+// 🆕 ETAPA 1 (3 ago 2026) — jerarquía de resolución del número del
+// remitente. `message.from` es la fuente principal, pero Meta a veces lo
+// manda vacío/corrupto en el mismo payload donde `value.contacts[0].wa_id`
+// sí trae el número real (caso real: lead "Yuly"). Nunca inventa ni
+// adivina más allá de estas dos fuentes — si ninguna pasa esNumeroValido,
+// devuelve null y quien llama debe alertar en vez de perder el mensaje.
+function resolverNumeroRemitente(message, contacts) {
+  if (message && esNumeroValido(message.from)) return message.from;
+  if (Array.isArray(contacts) && contacts[0] && esNumeroValido(contacts[0].wa_id)) return contacts[0].wa_id;
+  return null;
+}
+
+// 🆕 (5 ago 2026) — caso real "Lina De Brigard": cuando resolverNumeroRemitente()
+// no logra extraer un número, el mensaje se descarta sin dejar ningún rastro
+// persistente de la forma real del payload, lo que hace imposible diagnosticar
+// por qué falló después del hecho (ver investigación en Railway/Postgres, sin
+// fila en `messages` para reconstruir). Este payload SÍ se loguea/persiste
+// completo (a diferencia del resto del webhook, ver docs/PHASE_1A_PRIVACY.md)
+// porque es justo el caso donde la falta de detalle impide el diagnóstico.
+// Redacta por si acaso cualquier clave que luzca como token/secret — nunca se
+// ha visto un token en el cuerpo de un webhook de Meta (confirmado en
+// PHASE_1A_PRIVACY.md), esto es una capa defensiva adicional, no la mitigación
+// de un riesgo ya observado.
+var PATRON_CAMPO_SENSIBLE = /token|secret|authorization|api[_-]?key|password/i;
+function sanitizarPayloadWebhook(obj) {
+  if (Array.isArray(obj)) return obj.map(sanitizarPayloadWebhook);
+  if (obj && typeof obj === 'object') {
+    var limpio = {};
+    Object.keys(obj).forEach(function(clave) {
+      limpio[clave] = PATRON_CAMPO_SENSIBLE.test(clave) ? '[REDACTADO]' : sanitizarPayloadWebhook(obj[clave]);
+    });
+    return limpio;
+  }
+  return obj;
 }
 
 // Único lugar que decide si un mensaje entrante de WhatsApp va a ser
@@ -52,11 +112,13 @@ function esNumeroValido(n) {
 // (María, 29 jul 2026) cuyo mensaje nunca llegó a "🆕 Lead creado" ni a
 // "Mensaje de...". `esSaliente` se recibe ya calculado por el llamador
 // (depende de PHONE_NUMBER_ID, definido más abajo en el archivo).
-function tipoDeMensajeEsManejado(message, esSaliente) {
+// `numeroResuelto` viene ya calculado por resolverNumeroRemitente() —
+// evita que esta función tenga su propia noción distinta de "número válido".
+function tipoDeMensajeEsManejado(message, esSaliente, numeroResuelto) {
   if (!message) return false;
   if (esSaliente && message.type === 'text') return true;
-  if (message.type === 'text' && esNumeroValido(message.from)) return true;
-  if ((message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && esNumeroValido(message.from)) return true;
+  if (message.type === 'text' && numeroResuelto) return true;
+  if ((message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && numeroResuelto) return true;
   return false;
 }
 
@@ -90,8 +152,36 @@ const seguimientos = {};
 const notas = {};
 const ultimaActividad = {};
 const procesando = {};
+
+// 🆕 Lock síncrono contra condición de carrera (auditoría 2 ago 2026, lead
+// real Fernando Escobar: 3 mensajes en ~7s — el guard vivía dentro del
+// .then() de capturarMensajeCRM(), es decir DESPUÉS de un round-trip async a
+// la BD, así que dos mensajes en ráfaga pasaban el guard a la vez: uno se
+// perdía en silencio, el otro disparaba un saludo genérico ignorando lo ya
+// hablado). La reclamación debe ejecutarse en el mismo tick síncrono del
+// webhook, antes de cualquier await/promesa — nunca dentro de un .then().
+// Devuelve true si el lock YA estaba tomado por OTRO mensaje de ese número
+// (quien llama no debe tocarlo al bailar); false si lo acabamos de reclamar
+// nosotros (quien llama debe liberarlo con liberarLockSiLoReclamamos() si
+// decide no seguir hasta procesarMensaje()).
+function reclamarLockProcesando(numero) {
+  var yaHabiaMensajeEnProceso = !!procesando[numero];
+  if (!yaHabiaMensajeEnProceso) procesando[numero] = true;
+  return yaHabiaMensajeEnProceso;
+}
+
+// Libera procesando[numero] SOLO si quien llama fue quien lo reclamó
+// (yaHabiaMensajeEnProceso === false) — nunca libera el lock de otro mensaje.
+function liberarLockSiLoReclamamos(numero, yaHabiaMensajeEnProceso) {
+  if (!yaHabiaMensajeEnProceso) delete procesando[numero];
+}
+
 let pausadoTodo = false;
 let bdLista = false;
+// 🆕 ETAPA 0 (3 ago) — Page Access Token derivado al arranque (ver
+// obtenerPageAccessToken()), usado solo para la Graph API de Lead Ads
+// (leads_retrieval). Nunca se usa para WhatsApp — eso sigue con META_API_TOKEN.
+let pageAccessToken = null;
 
 // Helper: agrega mensaje al historial CON timestamp
 function agregarMensaje(numero, role, contenido) {
@@ -628,6 +718,14 @@ async function inicializarBD() {
     await pool.query('CREATE TABLE IF NOT EXISTS conversaciones (numero TEXT PRIMARY KEY, mensajes JSONB NOT NULL DEFAULT \'[]\')');
     await pool.query('CREATE TABLE IF NOT EXISTS pausados (numero TEXT PRIMARY KEY)');
     await pool.query('CREATE TABLE IF NOT EXISTS seguimientos (numero TEXT PRIMARY KEY, estado TEXT NOT NULL, timestamp BIGINT NOT NULL, intentos INT NOT NULL DEFAULT 0, ultimo_mensaje_lead BIGINT)');
+    // 🆕 Seguimiento consciente del producto (auditoría 2 ago 2026): antes
+    // TODOS los seguimientos decían "repisa" sin importar qué producto pidió
+    // el lead. Ver getMensajeSeguimiento()/mensajeReactivacion() más abajo.
+    await pool.query('ALTER TABLE seguimientos ADD COLUMN IF NOT EXISTS producto TEXT');
+    // 🆕 Etapa 2, punto 2 (3 ago 2026) — cadencia de seguimiento según la
+    // intención de compra que el lead marcó en el formulario. Ver
+    // detectarIntencionCompraFormulario() y VENTANA_REACTIVACION_POR_INTENCION.
+    await pool.query('ALTER TABLE seguimientos ADD COLUMN IF NOT EXISTS nivel_intencion TEXT');
     await pool.query('CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)');
     await pool.query('CREATE TABLE IF NOT EXISTS notas (numero TEXT PRIMARY KEY, nota TEXT)');
 
@@ -667,6 +765,11 @@ async function inicializarBD() {
       'updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
       ')'
     );
+    // 🆕 Etapa 2, punto 2 (3 ago 2026) — intención de compra declarada en el
+    // formulario ("¿cuándo_te_gustaría_comprarla?"), persistida en el lead
+    // para sobrevivir hasta que se active el primer saludo_sin_respuesta.
+    await pool.query('ALTER TABLE leads ADD COLUMN IF NOT EXISTS buy_intent TEXT');
+    await pool.query('ALTER TABLE lead_form_submissions ADD COLUMN IF NOT EXISTS form_name TEXT');
 
     await pool.query(
       'CREATE TABLE IF NOT EXISTS messages (' +
@@ -777,13 +880,15 @@ async function inicializarBD() {
     var rp = await pool.query('SELECT numero FROM pausados');
     rp.rows.forEach(function(row) { pausados[row.numero] = true; });
 
-    var rs = await pool.query('SELECT numero, estado, timestamp, intentos, ultimo_mensaje_lead FROM seguimientos');
+    var rs = await pool.query('SELECT numero, estado, timestamp, intentos, ultimo_mensaje_lead, producto, nivel_intencion FROM seguimientos');
     rs.rows.forEach(function(row) {
       seguimientos[row.numero] = {
         estado: row.estado,
         timestamp: Number(row.timestamp),
         intentos: row.intentos,
-        ultimoMensajeLead: row.ultimo_mensaje_lead ? Number(row.ultimo_mensaje_lead) : undefined
+        ultimoMensajeLead: row.ultimo_mensaje_lead ? Number(row.ultimo_mensaje_lead) : undefined,
+        producto: row.producto || null,
+        nivelIntencion: row.nivel_intencion || null
       };
     });
 
@@ -854,8 +959,8 @@ function guardarSeguimiento(numero) {
   var s = seguimientos[numero];
   if (!s) return;
   pool.query(
-    'INSERT INTO seguimientos (numero, estado, timestamp, intentos, ultimo_mensaje_lead) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (numero) DO UPDATE SET estado = $2, timestamp = $3, intentos = $4, ultimo_mensaje_lead = $5',
-    [numero, s.estado, s.timestamp, s.intentos, s.ultimoMensajeLead || null]
+    'INSERT INTO seguimientos (numero, estado, timestamp, intentos, ultimo_mensaje_lead, producto, nivel_intencion) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (numero) DO UPDATE SET estado = $2, timestamp = $3, intentos = $4, ultimo_mensaje_lead = $5, producto = $6, nivel_intencion = $7',
+    [numero, s.estado, s.timestamp, s.intentos, s.ultimoMensajeLead || null, s.producto || null, s.nivelIntencion || null]
   ).catch(function(e) { console.error('Error guardando seguimiento ' + numero + ':', e.message); });
 }
 
@@ -913,12 +1018,33 @@ const TIEMPO = {
   cotizacion_2:           7 * 24 * 60 * 60 * 1000,
 };
 
-function getMensajeSeguimiento(estado, intento, nombre) {
+// 🆕 Seguimiento consciente del producto (auditoría 2 ago 2026) — antes
+// TODOS los mensajes de seguimiento decían "repisa" sin importar qué
+// producto pidió el lead, porque nacieron cuando Repisa Flotante era el
+// único producto. Mapa de artículo/nombre/pronombre/concordancia para poder
+// generar frases gramaticalmente correctas para cualquier producto sin
+// reescribir cada mensaje a mano. Nunca se usa "repisa" como fallback — el
+// `default` (producto null/desconocido) usa "tu pedido", nunca un producto
+// específico adivinado.
+var INFO_PRODUCTO_SEGUIMIENTO_DEFAULT = { articulo: 'el', nombre: 'pedido', pron: 'lo', listo: 'listo' };
+var INFO_PRODUCTO_SEGUIMIENTO = {
+  'Repisa Flotante': { articulo: 'la', nombre: 'repisa', pron: 'la', listo: 'lista' },
+  'Mesa Auxiliar': { articulo: 'la', nombre: 'mesa auxiliar', pron: 'la', listo: 'lista' },
+  'Escritorio Flotante': { articulo: 'el', nombre: 'escritorio', pron: 'lo', listo: 'listo' },
+  'Escritorio con Cajones': { articulo: 'el', nombre: 'escritorio', pron: 'lo', listo: 'listo' }
+};
+
+function infoProductoSeguimiento(producto) {
+  return INFO_PRODUCTO_SEGUIMIENTO[producto] || INFO_PRODUCTO_SEGUIMIENTO_DEFAULT;
+}
+
+function getMensajeSeguimiento(estado, intento, nombre, producto) {
   var n = nombre ? nombre : '';
   var saludo = n ? ('Hola ' + n + '! 😊') : 'Hola! 😊';
+  var info = infoProductoSeguimiento(producto);
 
   if (estado === 'saludo_sin_respuesta') {
-    if (intento === 1) return saludo + ' ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
+    if (intento === 1) return saludo + ' ¿Pudiste pensar en ' + info.articulo + ' ' + info.nombre + '? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
     if (intento === 2) return saludo + ' Aquí estoy cuando quieras retomar 🌿';
   }
   if (estado === 'esperando_info') {
@@ -926,12 +1052,12 @@ function getMensajeSeguimiento(estado, intento, nombre) {
     if (intento === 2) return saludo + ' Aquí estoy cuando quieras retomar 🌿';
   }
   if (estado === 'esperando_decision') {
-    if (intento === 1) return saludo + ' ¿Alcanzaste a ver el espacio donde la quieres? Tengo cupo de fabricación esta semana si quieres que te la deje lista 🌿';
-    if (intento === 2) return saludo + ' Solo para no dejarte la repisa pendiente — si más adelante la quieres retomar, aquí estoy con mucho gusto 😊';
+    if (intento === 1) return saludo + ' ¿Alcanzaste a ver el espacio donde ' + info.pron + ' quieres? Tengo cupo de fabricación esta semana si quieres que te ' + info.pron + ' deje ' + info.listo + ' 🌿';
+    if (intento === 2) return saludo + ' Solo para no dejarte ' + info.articulo + ' ' + info.nombre + ' pendiente — si más adelante ' + info.pron + ' quieres retomar, aquí estoy con mucho gusto 😊';
   }
   if (estado === 'cotizacion_enviada') {
-    if (intento === 1) return saludo + ' ¿Cómo te fue con la cotización de tu repisa? Si quieres ajustamos cualquier detalle (medida, fecha de entrega). Tengo cupo para arrancar esta semana 🌿';
-    if (intento === 2) return saludo + ' Solo para no dejarte la repisa pendiente — si más adelante la quieres retomar, aquí estoy con mucho gusto 😊';
+    if (intento === 1) return saludo + ' ¿Cómo te fue con la cotización de tu ' + info.nombre + '? Si quieres ajustamos cualquier detalle (medida, fecha de entrega). Tengo cupo para arrancar esta semana 🌿';
+    if (intento === 2) return saludo + ' Solo para no dejarte ' + info.articulo + ' ' + info.nombre + ' pendiente — si más adelante ' + info.pron + ' quieres retomar, aquí estoy con mucho gusto 😊';
   }
   return null;
 }
@@ -955,6 +1081,29 @@ function leadPrometioInfo(texto) {
   return false;
 }
 
+// 🆕 Deduplicación determinística de formulario repetido (auditoría 2 ago
+// 2026, caso real Deissy): un reenvío técnico del mismo texto (mismo
+// número, mismo contenido) hacía que Olivia lo tratara como mensaje nuevo y
+// repitiera el saludo. Compara SOLO contra el último mensaje 'user' guardado
+// (no contra todo el historial) — si el texto es idéntico Y ya hay una
+// respuesta 'assistant' después de ese mensaje anterior, es un reenvío ya
+// respondido. `historial` debe incluir el mensaje actual como último
+// elemento (agregarMensaje() ya lo agregó antes de llamar a
+// procesarMensaje()) — se busca hacia atrás SIN contarlo.
+function detectarMensajeDuplicado(historial, textoActual) {
+  if (!Array.isArray(historial) || historial.length < 2) return false;
+  for (var i = historial.length - 2; i >= 0; i--) {
+    var entrada = historial[i];
+    if (!entrada || entrada.role !== 'user') continue;
+    if (entrada.content !== textoActual) return false; // el 'user' anterior más reciente no coincide — no es reenvío
+    for (var j = i + 1; j < historial.length - 1; j++) {
+      if (historial[j] && historial[j].role === 'assistant') return true; // ya se había respondido a ese mensaje
+    }
+    return false; // texto igual pero todavía sin respuesta previa — no es un reenvío real
+  }
+  return false;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 🔧 FIX (24 jun): activarSeguimiento ahora protege LILI_NUMERO.
 // Antes, cuando un lead escalaba y el mensaje de Lili (desde su número
@@ -969,7 +1118,7 @@ function leadPrometioInfo(texto) {
 // puede entrar al objeto `seguimientos`, sin importar desde dónde se llame
 // esta función.
 // ═══════════════════════════════════════════════════════════════════════════
-function activarSeguimiento(numero, estado) {
+function activarSeguimiento(numero, estado, producto) {
   // PROTECCIÓN: Lili NUNCA puede quedar registrada como lead en seguimiento
   if (numero === LILI_NUMERO) {
     console.log('⏹️ Ignorando activación de seguimiento para Lili (' + numero + ') — su número no es un lead');
@@ -980,9 +1129,14 @@ function activarSeguimiento(numero, estado) {
       (seguimientos[numero].estado === 'cerrado_venta' ||
        seguimientos[numero].estado === 'cerrado_perdido')) return;
 
-  seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0 };
+  // 🆕 Si quien llama no tiene el producto a mano en este momento, se
+  // conserva el que ya se conocía de este número (nunca se pierde ni se
+  // inventa) — null solo si nunca se supo.
+  var productoResuelto = producto || (seguimientos[numero] && seguimientos[numero].producto) || null;
+
+  seguimientos[numero] = { estado: estado, timestamp: Date.now(), intentos: 0, producto: productoResuelto };
   guardarSeguimiento(numero);
-  console.log('Seguimiento activado para ' + numero + ': ' + estado);
+  console.log('Seguimiento activado para ' + numero + ': ' + estado + (productoResuelto ? ' (producto: ' + productoResuelto + ')' : ''));
 }
 
 function cancelarSeguimiento(numero) {
@@ -1043,13 +1197,28 @@ setInterval(function() {
 
       if (seg.intentos <= 2) {
         var nombre = getNombreLead(numero);
-        var mensaje = getMensajeSeguimiento(seg.estado, seg.intentos, nombre);
+        var mensaje = getMensajeSeguimiento(seg.estado, seg.intentos, nombre, seg.producto);
 
         if (mensaje) {
-          enviarPlantilla(numero, 'seguimiento_repisa', 'es_CO');
-          seg.timestamp = Date.now();
-          guardarSeguimiento(numero);
-          console.log('Seguimiento (plantilla) enviado a ' + numero + ' (intento ' + seg.intentos + ', estado: ' + seg.estado + ')');
+          // 🆕 La plantilla "seguimiento_repisa" tiene el texto de repisa fijo
+          // (sin variable, aprobada por Meta solo para ese producto — ver el
+          // texto exacto en /panel/reabrir más abajo). Fuera de la ventana de
+          // 24h, WhatsApp exige una plantilla aprobada — no existe todavía
+          // una plantilla genérica para Mesa Auxiliar/Escritorio, así que no
+          // se puede mandar un "mensaje genérico" de texto libre aquí. Hasta
+          // que exista esa plantilla, se avisa a Lili para seguimiento manual
+          // en vez de mandar el producto equivocado o fallar en silencio.
+          if (!seg.producto || seg.producto === 'Repisa Flotante') {
+            enviarPlantilla(numero, 'seguimiento_repisa', 'es_CO');
+            seg.timestamp = Date.now();
+            guardarSeguimiento(numero);
+            console.log('Seguimiento (plantilla) enviado a ' + numero + ' (intento ' + seg.intentos + ', estado: ' + seg.estado + ')');
+          } else {
+            console.log('⏭️ Seguimiento por plantilla omitido para ' + numero + ' — producto=' + seg.producto + ', no hay plantilla de WhatsApp aprobada para ese producto fuera de la ventana de 24h');
+            notificarLili(numero, 'Seguimiento automático pendiente: este lead pidió "' + seg.producto + '" y todavía no hay una plantilla de WhatsApp aprobada para eso fuera de la ventana de 24h. Escríbele tú directamente.');
+            seg.timestamp = Date.now();
+            guardarSeguimiento(numero);
+          }
         }
       } else {
         seguimientos[numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: seg.intentos };
@@ -1063,14 +1232,44 @@ setInterval(function() {
 
 var ultimaTandaReactivacion = null;
 
-function mensajeReactivacion(intento) {
-  if (intento === 1) return 'Hola! 😊 ¿Pudiste pensar en la repisa? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
+// 🆕 Etapa 2, punto 2 (3 ago 2026) — cadencia de reactivación (estado
+// saludo_sin_respuesta) según la intención de compra del formulario.
+// Tiempos aprobados por Lili. minHoras/maxHoras se miden desde el último
+// mensaje real del lead (mismo criterio que ya usaba el cron, `ref` más
+// abajo). Con solo 2 corridas diarias (12pm/7pm) no se puede garantizar un
+// segundo intento a una hora exacta del mismo día — la granularidad real
+// de este cron es de medio día, no de horas.
+//
+// ⚠️ Los rangos de 'durante_este_mes' y 'en_1_o_2_meses' caen fuera de la
+// ventana de 24h de WhatsApp — ahí NO se puede usar texto libre
+// (enviarMensaje), solo una plantilla aprobada. Mismo guard que ya existe
+// en el cron horario: usa la plantilla "seguimiento_repisa" solo si el
+// producto es Repisa Flotante (ese es el único texto aprobado hoy);
+// para cualquier otro producto, notifica a Lili en vez de mandar el
+// producto equivocado o fallar en silencio. Ver el guard en el envío,
+// más abajo.
+const VENTANA_REACTIVACION_POR_INTENCION = {
+  'inmediatamente':          { minHoras: 3,      maxHoras: 24 },
+  'en_los_próximos_15_días': { minHoras: 3,      maxHoras: 24 },
+  'durante_este_mes':        { minHoras: 48,     maxHoras: 6 * 24 },
+  'en_1_o_2_meses':          { minHoras: 5 * 24, maxHoras: 20 * 24 }
+};
+const VENTANA_REACTIVACION_DEFAULT = VENTANA_REACTIVACION_POR_INTENCION['en_los_próximos_15_días'];
+
+function ventanaReactivacion(nivelIntencion) {
+  return VENTANA_REACTIVACION_POR_INTENCION[nivelIntencion] || VENTANA_REACTIVACION_DEFAULT;
+}
+
+function mensajeReactivacion(intento, producto) {
+  var info = infoProductoSeguimiento(producto);
+  if (intento === 1) return 'Hola! 😊 ¿Pudiste pensar en ' + info.articulo + ' ' + info.nombre + '? Si tienes alguna duda con la medida o el espacio, con gusto te ayudo 🌿';
   return 'Hola! 😊 No hay afán. Si en algún momento quieres retomar, aquí estoy con gusto 🌿';
 }
 
 if (require.main === module) {
 setInterval(function() {
   if (!bdLista) return;
+  if (!reactivacion1219Habilitada()) return;
   var ahoraUTC = new Date();
   var horaColombia = (ahoraUTC.getUTCHours() - 5 + 24) % 24;
   var fechaColombia = new Date(ahoraUTC.getTime() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -1093,13 +1292,14 @@ setInterval(function() {
     var ahora = Date.now();
     var ref = seg.ultimoMensajeLead || seg.timestamp;
     var horasDesde = (ahora - ref) / (60 * 60 * 1000);
+    var ventana = ventanaReactivacion(seg.nivelIntencion);
 
-    if (horasDesde >= 3 && horasDesde <= 24) {
+    if (horasDesde >= ventana.minHoras && horasDesde <= ventana.maxHoras) {
       candidatos.push({ numero: numero, seg: seg });
-    } else if (horasDesde > 24) {
+    } else if (horasDesde > ventana.maxHoras) {
       seguimientos[numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: seg.intentos };
       guardarSeguimiento(numero);
-      console.log('Lead fuera de ventana 24h, cerrado: ' + numero);
+      console.log('Lead fuera de ventana (' + ventana.maxHoras + 'h, intención: ' + (seg.nivelIntencion || 'default') + '), cerrado: ' + numero);
     }
   }
 
@@ -1110,14 +1310,25 @@ setInterval(function() {
       if (pausados[c.numero]) return;
       c.seg.intentos++;
       if (c.seg.intentos <= 2) {
-        // Este cron filtra explícitamente leads entre 3-24h desde su último mensaje
-        // (ver el filtro "horasDesde >= 3 && horasDesde <= 24" más arriba), así que
-        // SIEMPRE está dentro de la ventana de 24h — no necesita plantilla, texto
-        // libre funciona bien y permite el mensaje personalizado de mensajeReactivacion().
-        enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos));
+        // 🆕 Etapa 2, punto 2: con la ventana ahora parametrizada por
+        // intención, 'durante_este_mes' y 'en_1_o_2_meses' SÍ pueden caer
+        // fuera de las 24h de WhatsApp (su minHoras ya empieza en 48h/5
+        // días) — ahí no se puede usar texto libre. Mismo guard que ya
+        // existe en el cron horario: plantilla solo si el producto es
+        // Repisa Flotante, si no, avisa a Lili para seguimiento manual.
+        var horasDesdeEnvio = (Date.now() - (c.seg.ultimoMensajeLead || c.seg.timestamp)) / (60 * 60 * 1000);
+        if (horasDesdeEnvio <= 24) {
+          enviarMensaje(c.numero, mensajeReactivacion(c.seg.intentos, c.seg.producto));
+          console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
+        } else if (!c.seg.producto || c.seg.producto === 'Repisa Flotante') {
+          enviarPlantilla(c.numero, 'seguimiento_repisa', 'es_CO');
+          console.log('Reactivación (plantilla, fuera de 24h) enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
+        } else {
+          console.log('⏭️ Reactivación por plantilla omitida para ' + c.numero + ' — producto=' + c.seg.producto + ', no hay plantilla aprobada para ese producto fuera de la ventana de 24h');
+          notificarLili(c.numero, 'Seguimiento de reactivación pendiente: este lead pidió "' + c.seg.producto + '" y está fuera de la ventana de 24h de WhatsApp sin plantilla genérica todavía. Escríbele tú directamente.');
+        }
         c.seg.timestamp = Date.now();
         guardarSeguimiento(c.numero);
-        console.log('Reactivación enviada a ' + c.numero + ' (intento ' + c.seg.intentos + ')');
       } else {
         seguimientos[c.numero] = { estado: 'cerrado_sin_respuesta', timestamp: Date.now(), intentos: c.seg.intentos };
         guardarSeguimiento(c.numero);
@@ -1409,6 +1620,10 @@ Reconoce con calidez lo que ves, pero escala para que Lili dé una recomendació
 Si la imagen no es clara o no la puedes identificar con confianza, trátala como CASO B y escala.
 NUNCA ignores una imagen ni respondas como si no hubiera pasado nada.
 Si el mensaje del historial dice "[El cliente envió un audio]" o "[El cliente envió un archivo]" (sin ser imagen), no puedes verlo ni escucharlo — ahí sí escala siempre: "¡Gracias! 😊 Ya le aviso a Lili para que lo revise. En un momentico te escribe. [ESCALAR]"
+
+Si el cliente comparte un link (Facebook, Instagram, cualquier URL) como texto, no puedes ver su contenido — trátalo igual que un audio o archivo: reconoce que lo recibiste, nunca describas ni asumas qué muestra, y escala con [ESCALAR]: "¡Gracias por compartir el link! 😊 Ya le aviso a Lili para que lo revise. En un momentico te escribe. [ESCALAR]"
+
+REGLA PERMANENTE: si en cualquier momento de la conversación escalaste algo porque no podías verlo (imagen, audio, archivo, o link), NUNCA en un turno posterior afirmes con seguridad qué contenía — ni asumas que un mensaje corto del cliente ("sí", "esos", "los de la foto") confirma tu suposición sobre ese contenido. Si el cliente vuelve a referirse a algo que escalaste sin que Lili haya confirmado el contenido, sigue tratándolo como no visto.
 
 Si ya hay mensajes previos en el historial con este número, NUNCA vuelvas a saludar como si fuera la primera vez. NUNCA digas "Hola, soy Olivia..." de nuevo.
 Lee el historial, entiende en qué punto iba la conversación y continúa naturalmente desde ahí.
@@ -1854,7 +2069,7 @@ app.get('/reporte', function(req, res) {
   Object.keys(seguimientos).forEach(function(n) { if (n !== LILI_NUMERO) todos[n] = true; });
 
   var cat = {
-    en_conversacion: [], saludo_sin_respuesta: [], esperando_info: [],
+    en_conversacion: [], saludo_sin_respuesta: [], reactivacion_futura: [], esperando_info: [],
     esperando_decision: [], cotizacion_enviada: [], cerrado_sin_respuesta: [], cerrado_venta: [], cerrado_perdido: []
   };
 
@@ -1869,6 +2084,7 @@ app.get('/reporte', function(req, res) {
   var etiquetas = {
     en_conversacion: '💬 En conversación / atendiendo',
     saludo_sin_respuesta: '👋 Saludaron y no respondieron',
+    reactivacion_futura: '📅 Dijeron "más adelante" — sin seguimiento automático',
     esperando_info: '📏 Prometieron enviar medidas/fotos',
     esperando_decision: '🖼️ Esperando decisión (fotos enviadas)',
     cotizacion_enviada: '📋 Cotización enviada',
@@ -1907,6 +2123,7 @@ function estadoLegible(numero) {
   if (!seg) return pausados[numero] ? '⏸️ Pausado (atendiendo)' : '💬 En conversación';
   var map = {
     saludo_sin_respuesta: '👋 Saludó sin responder',
+    reactivacion_futura: '📅 Más adelante',
     esperando_info: '📏 Prometió medidas/fotos',
     esperando_decision: '🖼️ Esperando decisión',
     cotizacion_enviada: '📋 Cotización enviada',
@@ -2516,6 +2733,7 @@ function escapeHtml(texto) {
 // No se borran ni renombran los estados antiguos — este mapa es de solo lectura.
 const MAPA_LIFECYCLE_STAGE = {
   saludo_sin_respuesta: 'CONTACTED',
+  reactivacion_futura: 'FUTURE_INTENT',
   esperando_info: 'WAITING_CUSTOMER_INFO',
   esperando_decision: 'WAITING_DECISION',
   cotizacion_enviada: 'QUOTED',
@@ -2758,20 +2976,95 @@ function capturarReferral(lead, referralRaw, whatsappMessageId) {
 //      usando un token de página. Si esto falta, el evento webhook nunca
 //      llega — ni siquiera se vería un error, simplemente no pasaría nada.
 //
-//   B. El token usado para leer las respuestas (`GET /{leadgen_id}`, más
-//      abajo, hoy usa META_API_TOKEN) necesita el permiso `leads_retrieval`.
-//      Verificar en App Dashboard → App Review → Permisos y funciones si ya
-//      está concedido, o si hace falta pedir revisión. Si falta, el webhook
-//      SÍ llegará (evento LEAD_FORM_WEBHOOK_RECEIVED se registrará bien),
-//      pero la llamada a Graph API fallará con un error de permisos — se
-//      verá en logs como "Error consultando Graph API..." y en
-//      lead_form_submissions con estado_vinculacion = 'FALLIDO'.
+//   B. RESUELTO por ETAPA 0 (3 ago 2026, ver banner más abajo): META_API_TOKEN
+//      es un User Token y NUNCA tuvo permiso leads_retrieval sobre me/leadgen_forms
+//      ni {leadgen_id}. Confirmado a mano en Graph API Explorer que un Page
+//      Access Token (derivado de me/accounts con permiso pages_manage_ads) sí
+//      funciona. `manejarEventoLeadgen()` ahora usa `pageAccessToken` en vez
+//      de META_API_TOKEN para esta llamada.
 //
 // Recomendación antes de generar un lead de prueba con la herramienta de
-// Lead Ads Testing: confirmar A y B primero. Si no se confirman, igual se
-// puede generar el lead de prueba — el resultado en los logs/tabla dirá
-// exactamente cuál de los dos pasos falta (o si ya están completos).
+// Lead Ads Testing: confirmar A primero. Si no se confirma, igual se puede
+// generar el lead de prueba — el resultado en los logs/tabla dirá si ese
+// paso falta (o si ya está completo).
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🆕 ETAPA 0 (3 ago 2026) — Page Access Token para la Graph API de Lead Ads.
+//
+// manejarEventoLeadgen() fallaba al leer leads porque usaba META_API_TOKEN
+// (un User Token) contra endpoints que requieren un Page Access Token con
+// permiso leads_retrieval. Confirmado a mano en Graph API Explorer: User
+// Token + pages_manage_ads → me/accounts?fields=id,name,access_token →
+// Page Access Token de "Hecho por Lili" → funciona en me/leadgen_forms y en
+// {form_id}/leads.
+//
+// obtenerPageAccessToken() deriva ese token al arranque del servidor. El
+// token corto de me/accounts dura ~1h, así que se extiende de inmediato a
+// larga duración (60 días, o indefinido si la página ya dio permisos
+// permanentes) con el flujo fb_exchange_token — requiere META_APP_SECRET
+// (ya existe en el código para verificar la firma del webhook, línea ~20;
+// confirmar que esté configurado en Railway) y META_APP_ID. Si la extensión
+// falla, se usa igual el token corto (mejor 1h que nada) con una advertencia
+// clara en logs — nunca bloquea el arranque del resto del servidor.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Intercambia un Page Access Token de corta duración (~1h, el que devuelve
+// me/accounts) por uno de larga duración (60 días o indefinido). Lanza si
+// falla — quien llama decide el fallback.
+async function extenderPageAccessToken(tokenCorto) {
+  if (!META_APP_SECRET) {
+    throw new Error('META_APP_SECRET no está configurado en las variables de entorno');
+  }
+  var resp = await axios.get('https://graph.facebook.com/v25.0/oauth/access_token', {
+    params: {
+      grant_type: 'fb_exchange_token',
+      client_id: META_APP_ID,
+      client_secret: META_APP_SECRET,
+      fb_exchange_token: tokenCorto
+    }
+  });
+  return resp.data.access_token;
+}
+
+// Deriva el Page Access Token al arranque del servidor y lo guarda en
+// `pageAccessToken` (variable de módulo). Nunca relanza el error — un fallo
+// aquí se loguea y Olivia sigue funcionando para WhatsApp de todas formas
+// (ver banner arriba).
+async function obtenerPageAccessToken() {
+  try {
+    var resp = await axios.get('https://graph.facebook.com/v25.0/me/accounts', {
+      params: { fields: 'id,name,access_token' },
+      headers: { Authorization: 'Bearer ' + META_API_TOKEN }
+    });
+    var paginas = resp.data.data || [];
+    if (paginas.length === 0) {
+      throw new Error('me/accounts no devolvió ninguna página');
+    }
+    var pagina = paginas.find(function(p) { return p.name === 'Hecho por Lili'; }) || paginas[0];
+
+    try {
+      pageAccessToken = await extenderPageAccessToken(pagina.access_token);
+      console.log('✅ Page Access Token obtenido para ' + pagina.name);
+    } catch (eExtender) {
+      pageAccessToken = pagina.access_token;
+      var detalleExtender = eExtender.response ? (eExtender.response.status + ' ' + JSON.stringify(eExtender.response.data)) : eExtender.message;
+      console.warn('⚠️ Page Token es de corta duración, expirará en ~1h — no se pudo extender a larga duración: ' + detalleExtender);
+      console.log('✅ Page Access Token obtenido para ' + pagina.name);
+    }
+  } catch (e) {
+    var detalle = e.response ? (e.response.status + ' ' + JSON.stringify(e.response.data)) : e.message;
+    console.error('❌ No se pudo obtener Page Access Token: ' + detalle);
+
+    // 🆕 FIX RÁPIDO (3 ago): si la derivación automática falla (ej.
+    // META_API_TOKEN sin permiso para listar páginas), usar un Page Access
+    // Token puesto a mano en Railway como fallback, sin tocar META_API_TOKEN.
+    if (PAGE_ACCESS_TOKEN_ENV) {
+      pageAccessToken = PAGE_ACCESS_TOKEN_ENV;
+      console.log('📋 Usando PAGE_ACCESS_TOKEN de variable de entorno (no derivado)');
+    }
+  }
+}
 
 const CAMPOS_TELEFONO_FORMULARIO = [
   'phone_number', 'phone', 'telefono', 'teléfono', 'whatsapp',
@@ -2836,26 +3129,27 @@ async function manejarEventoLeadgen(value) {
     metadata: { leadgen_id: leadgenId, form_id: formId, ad_id: adId, page_id: pageId }
   });
 
-  // 🚧 A partir de aquí, la llamada a Graph API FALLARÁ hasta que se agregue
-  // el producto Lead Ads en el dashboard (ver banner arriba). Se deja el
-  // manejo de error explícito para que, cuando se active, el comportamiento
-  // ya esté listo sin tocar código de nuevo.
+  // 🆕 ETAPA 0: usa pageAccessToken (derivado al arranque, ver
+  // obtenerPageAccessToken()), no META_API_TOKEN — este último es un User
+  // Token sin permiso leads_retrieval sobre este endpoint. Si la derivación
+  // falló al arrancar, pageAccessToken sigue en null y esta llamada fallará
+  // con un error de autenticación — visible en logs y en
+  // lead_form_submissions.estado_vinculacion = 'FALLIDO', igual que
+  // cualquier otro fallo de Graph API (catch de abajo).
   try {
     var resp = await axios.get(
       'https://graph.facebook.com/v21.0/' + leadgenId,
       {
-        params: { fields: 'field_data' },
-        // TODO (cuando se active Lead Ads): verificar si META_API_TOKEN
-        // (token usado hoy para WhatsApp) tiene permiso leads_retrieval, o
-        // si hace falta un Page Access Token distinto para este endpoint.
-        headers: { Authorization: 'Bearer ' + META_API_TOKEN }
+        params: { fields: 'field_data,form' },
+        headers: { Authorization: 'Bearer ' + pageAccessToken }
       }
     );
     var fieldData = resp.data.field_data || [];
+    var formName = (resp.data.form && resp.data.form.name) ? resp.data.form.name : null;
 
     await pool.query(
-      'UPDATE lead_form_submissions SET field_data = $1, updated_at = NOW() WHERE id = $2',
-      [JSON.stringify(fieldData), submissionId]
+      'UPDATE lead_form_submissions SET field_data = $1, form_name = $2, updated_at = NOW() WHERE id = $3',
+      [JSON.stringify(fieldData), formName, submissionId]
     );
     registrarEventoLead(null, 'LEAD_FORM_DATA_RETRIEVED', {
       actor: 'SYSTEM',
@@ -2882,6 +3176,29 @@ async function manejarEventoLeadgen(value) {
         metadata: { leadgen_id: leadgenId }
       });
       console.log('🔗 Formulario vinculado a WhatsApp — leadgen_id=' + leadgenId + ' → lead_id=' + leadVinculado.id);
+
+      // 🆕 Etapa 2, punto 2 (3 ago 2026) — intención de compra declarada en
+      // el formulario, persistida para usarse más adelante en
+      // procesarMensaje() cuando se active el primer saludo_sin_respuesta
+      // (ver VENTANA_REACTIVACION_POR_INTENCION). "inmediatamente" además
+      // dispara una alerta a Lili YA, sin esperar a que el saludo quede sin
+      // respuesta — es la única categoría que pide atención prioritaria.
+      // Aislado en su propio try/catch: un fallo aquí NUNCA debe revertir
+      // la vinculación que ya quedó exitosa arriba (estado_vinculacion ya
+      // es 'VINCULADO' — este paso es un enriquecimiento adicional, no una
+      // condición para el éxito de la vinculación).
+      try {
+        var nivelIntencion = detectarIntencionCompraFormulario(fieldData);
+        if (nivelIntencion) {
+          await pool.query('UPDATE leads SET buy_intent = $2, updated_at = NOW() WHERE id = $1', [leadVinculado.id, nivelIntencion]);
+          console.log('🎯 Intención de compra detectada para lead ' + leadVinculado.id + ': ' + nivelIntencion);
+          if (nivelIntencion === 'inmediatamente') {
+            notificarLili(telefono, 'Este lead marcó "inmediatamente" en el formulario — quiere comprar ya. Prioriza este chat.');
+          }
+        }
+      } catch (eIntencion) {
+        console.error('Error guardando intención de compra para lead ' + leadVinculado.id + ':', eIntencion.message);
+      }
     } else {
       await pool.query(
         'UPDATE lead_form_submissions SET estado_vinculacion = \'FALLIDO\', updated_at = NOW() WHERE id = $1',
@@ -2972,7 +3289,7 @@ function detectarProductoPorTexto(textos) {
 // respaldo. Evita que un `name` genérico gane por casualidad frente a un
 // `value` que sí nombra el producto explícitamente, sin perder la
 // detección de hoy para formularios cuyo `name` no sea informativo.
-function detectarProductoFormulario(fieldData) {
+function detectarProductoFormulario(fieldData, formName) {
   if (!Array.isArray(fieldData)) return null;
 
   var nombres = fieldData.map(function(campo) { return campo.name || ''; });
@@ -2983,7 +3300,38 @@ function detectarProductoFormulario(fieldData) {
     var valores = Array.isArray(campo.values) ? campo.values.join(' ') : '';
     return (campo.name || '') + ' ' + valores;
   });
-  return detectarProductoPorTexto(textos);
+  var porValores = detectarProductoPorTexto(textos);
+  if (porValores) return porValores;
+
+  if (formName) return detectarProductoPorTexto([formName]);
+  return null;
+}
+
+// 🆕 Etapa 2, punto 2 (3 ago 2026) — cadencia de seguimiento según la
+// intención de compra declarada en el formulario. Campo y valores
+// confirmados con datos reales (Lili, 3 ago 2026) — nombre exacto del
+// campo `¿cuándo_te_gustaría_comprarla?`, 4 valores posibles. Nunca
+// adivina: si el campo no está o el valor no es uno de los 4 conocidos,
+// devuelve null (cadencia por defecto).
+var NOMBRE_CAMPO_INTENCION_COMPRA = '¿cuándo_te_gustaría_comprarla?';
+var NIVELES_INTENCION_COMPRA_VALIDOS = [
+  'inmediatamente',
+  'en_los_próximos_15_días',
+  'durante_este_mes',
+  'en_1_o_2_meses',
+  'más_adelante'
+];
+
+function detectarIntencionCompraFormulario(fieldData) {
+  if (!Array.isArray(fieldData)) return null;
+  for (var i = 0; i < fieldData.length; i++) {
+    var campo = fieldData[i];
+    if (!campo || !campo.name) continue;
+    if (String(campo.name).toLowerCase().trim() !== NOMBRE_CAMPO_INTENCION_COMPRA) continue;
+    var valor = Array.isArray(campo.values) && campo.values[0] ? String(campo.values[0]).toLowerCase().trim().replace(/\s+/g, '_') : null;
+    if (valor && NIVELES_INTENCION_COMPRA_VALIDOS.indexOf(valor) !== -1) return valor;
+  }
+  return null;
 }
 
 // Convierte field_data crudo (array de {name, values} de la Graph API) en
@@ -2994,7 +3342,7 @@ function formatearRespuestasFormulario(submission) {
   var fieldData = submission.field_data;
   if (!Array.isArray(fieldData) || fieldData.length === 0) return null;
 
-  var producto = detectarProductoFormulario(fieldData);
+  var producto = detectarProductoFormulario(fieldData, submission.form_name || null);
   var lineas = fieldData
     .filter(function(campo) { return campo.name !== 'phone_number' && campo.name !== 'full_name'; })
     .map(function(campo) {
@@ -3137,7 +3485,12 @@ app.post('/webhook', function(req, res) {
       // sin lanzar ninguna excepción — el webhook terminaba en silencio
       // total después de "📩 Webhook recibido", sin tocar el try/catch de
       // más abajo porque nunca hubo error. Ver docs/PENDIENTES.md.
-      var tipoDeMensajeManejado = tipoDeMensajeEsManejado(message, esSaliente);
+      //
+      // 🆕 ETAPA 1 (3 ago 2026): antes de decidir si el mensaje se maneja,
+      // se resuelve el número del remitente con la jerarquía from →
+      // contacts.wa_id (ver resolverNumeroRemitente()) — no solo message.from.
+      var numeroResuelto = resolverNumeroRemitente(message, value.contacts);
+      var tipoDeMensajeManejado = tipoDeMensajeEsManejado(message, esSaliente, numeroResuelto);
 
       if (esSaliente && message.type === 'text') {
         var leadNumero = message.to || null;
@@ -3159,7 +3512,7 @@ app.post('/webhook', function(req, res) {
             agregarMensaje(leadNumero, 'assistant', message.text.body);
             var estadoDetectado = detectarEstadoPorMensajeLili(message.text.body);
             if (estadoDetectado) {
-              activarSeguimiento(leadNumero, estadoDetectado);
+              activarSeguimiento(leadNumero, estadoDetectado, resultadoCRM.lead ? resultadoCRM.lead.product : null);
               console.log('Estado seguimiento activado para ' + leadNumero + ': ' + estadoDetectado);
             }
           });
@@ -3167,9 +3520,22 @@ app.post('/webhook', function(req, res) {
         return;
       }
 
-      if (message && message.type === 'text' && esNumeroValido(message.from)) {
-        var from = message.from;
+      if (message && message.type === 'text' && numeroResuelto) {
+        var from = numeroResuelto;
         var texto = message.text.body;
+
+        // 🆕 Lock síncrono contra condición de carrera (ver
+        // reclamarLockProcesando() más arriba en el archivo para el
+        // diagnóstico completo del caso real). Reclamado AQUÍ, antes de
+        // capturarMensajeCRM() — no dentro de su .then() — para que un
+        // segundo mensaje en ráfaga ya encuentre el lock tomado. Mejora
+        // inmediata aprobada por Lili; la solución completa (cola/debounce
+        // que agrupe mensajes en ráfaga y responda una sola vez) queda para
+        // la siguiente iteración — mientras tanto, un segundo mensaje en
+        // ráfaga se sigue guardando en el historial (ver dentro del .then
+        // de abajo) pero no dispara respuesta en esa pasada: comportamiento
+        // determinista y documentado, no un bug.
+        var yaHabiaMensajeEnProceso = reclamarLockProcesando(from);
 
         capturarMensajeCRM(from, {
           whatsappMessageId: message.id,
@@ -3185,7 +3551,10 @@ app.post('/webhook', function(req, res) {
           // ejecutar IA, no se reenvía, no se reactiva seguimiento. Si hubo un
           // error de BD verificando (resultadoCRM.error), se sigue el flujo
           // normal (fail-open) para no perder el mensaje del cliente.
-          if (resultadoCRM.duplicado) return;
+          if (resultadoCRM.duplicado) {
+            liberarLockSiLoReclamamos(from, yaHabiaMensajeEnProceso);
+            return;
+          }
           if (message.referral && resultadoCRM.lead) capturarReferral(resultadoCRM.lead, message.referral, message.id);
 
           console.log('Mensaje de ' + from + ' (message_id=' + message.id + '): ' + texto);
@@ -3194,15 +3563,28 @@ app.post('/webhook', function(req, res) {
 
           if (leadPrometioInfo(texto) && !pausados[from]) {
             setTimeout(function() {
-              if (!pausados[from]) { activarSeguimiento(from, 'esperando_info'); }
+              if (!pausados[from]) { activarSeguimiento(from, 'esperando_info', resultadoCRM.lead ? resultadoCRM.lead.product : null); }
             }, 2000);
           }
 
-          if (pausadoTodo) { console.log('Pausado global (mensaje guardado, agente no responde)'); return; }
-          if (pausados[from]) { console.log('Numero pausado (mensaje guardado, agente no responde): ' + from); return; }
-          if (procesando[from]) { console.log('Ya procesando mensaje de: ' + from); return; }
+          if (pausadoTodo) {
+            console.log('Pausado global (mensaje guardado, agente no responde)');
+            liberarLockSiLoReclamamos(from, yaHabiaMensajeEnProceso);
+            return;
+          }
+          if (pausados[from]) {
+            console.log('Numero pausado (mensaje guardado, agente no responde): ' + from);
+            liberarLockSiLoReclamamos(from, yaHabiaMensajeEnProceso);
+            return;
+          }
+          if (yaHabiaMensajeEnProceso) {
+            // El lock ya estaba tomado por OTRO mensaje de este mismo número
+            // (no lo reclamamos nosotros arriba) — no lo tocamos, es de esa
+            // otra pasada. Este mensaje ya quedó guardado en el CRM/historial.
+            console.log('Ya procesando mensaje de: ' + from);
+            return;
+          }
 
-          procesando[from] = true;
           // 🆕 FASE 1B: se pasa el leadId (si lo tenemos) para que procesarMensaje
           // pueda buscar un formulario de Lead Ads vinculado reciente.
           // 🆕 AJUSTE 1 + 🐛 FIX (26 jul): se pasa referral_data combinando lo
@@ -3217,12 +3599,17 @@ app.post('/webhook', function(req, res) {
         });
       }
 
-      if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && esNumeroValido(message.from)) {
-        var fromMedia = message.from;
+      if (message && (message.type === 'image' || message.type === 'video' || message.type === 'audio' || message.type === 'document') && numeroResuelto) {
+        var fromMedia = numeroResuelto;
         var mediaObj = message[message.type]; // message.image, message.audio, etc.
         var mediaId = mediaObj && mediaObj.id;
         var esVideoTipo = message.type === 'audio'; // Cloudinary guarda audio como "video"
         var textoMedia = '[El cliente envió ' + (message.type === 'image' ? 'una imagen' : message.type === 'audio' ? 'un audio' : 'un archivo') + ']';
+
+        // 🆕 Lock síncrono contra condición de carrera — misma arquitectura y
+        // mismo diagnóstico que la rama de texto entrante arriba (ver
+        // reclamarLockProcesando() para el detalle completo del caso real).
+        var yaHabiaMensajeEnProcesoMedia = reclamarLockProcesando(fromMedia);
 
         capturarMensajeCRM(fromMedia, {
           whatsappMessageId: message.id,
@@ -3236,12 +3623,19 @@ app.post('/webhook', function(req, res) {
         }).then(function(resultadoCRM) {
           // Mismo criterio de idempotencia que el mensaje de texto: si ya
           // existía el whatsapp_message_id, no se repite descarga, IA, ni envío.
-          if (resultadoCRM.duplicado) return;
+          if (resultadoCRM.duplicado) {
+            liberarLockSiLoReclamamos(fromMedia, yaHabiaMensajeEnProcesoMedia);
+            return;
+          }
           if (message.referral && resultadoCRM.lead) capturarReferral(resultadoCRM.lead, message.referral, message.id);
 
           console.log('Mensaje tipo ' + message.type + ' de ' + fromMedia + ' (message_id=' + message.id + ') — descargando y respondiendo');
 
-          if (pausadoTodo || pausados[fromMedia] || procesando[fromMedia]) return;
+          if (pausadoTodo || pausados[fromMedia]) {
+            liberarLockSiLoReclamamos(fromMedia, yaHabiaMensajeEnProcesoMedia);
+            return;
+          }
+          if (yaHabiaMensajeEnProcesoMedia) return; // lock de OTRO mensaje de este número — no tocarlo, ya quedó guardado
 
           // Guardamos primero un marcador genérico (por si la descarga falla o tarda),
           // y lo actualizamos con la URL real en cuanto la tengamos.
@@ -3269,7 +3663,6 @@ app.post('/webhook', function(req, res) {
             });
           }
 
-          procesando[fromMedia] = true;
           setTimeout(function() { procesarMensaje(fromMedia, textoMedia); }, 500);
         });
       }
@@ -3281,13 +3674,52 @@ app.post('/webhook', function(req, res) {
       // constancia explícita y se avisa a Lili para no perder el lead sin
       // aviso. No se loguea el contenido del mensaje (solo tipo/remitente/
       // id), mismo criterio de sanitización que el resto del webhook.
+      //
+      // 🆕 ETAPA 1 (3 ago 2026): antes la alerta a Lili dependía de que
+      // message.from viniera presente — exactamente el caso que este fix
+      // cubre (from vacío/corrupto). Ahora la alerta SIEMPRE se dispara
+      // cuando el mensaje no se pudo manejar (salvo que sea un eco de
+      // nuestro propio número de negocio, PHONE_NUMBER_ID), usando
+      // numeroResuelto si lo hay y, si no, un marcador explícito — nunca
+      // se vuelve a perder un lead en silencio por falta de número.
       if (!tipoDeMensajeManejado) {
         console.error('❌ Mensaje entrante NO MANEJADO — se descartó sin guardar en el CRM. type=' +
           (message.type || 'desconocido') + ', from=' + (message.from || 'desconocido') +
           ', message_id=' + (message.id || 'desconocido'));
-        if (message.from && message.from !== PHONE_NUMBER_ID) {
-          notificarLili(message.from, 'Llegó un mensaje de tipo "' + (message.type || 'desconocido') +
-            '" que el sistema todavía no sabe procesar. Revísalo manualmente — no se guardó ni se respondió automáticamente.');
+        if (message.from !== PHONE_NUMBER_ID) {
+          var camposPresentes = Object.keys(message).join(', ');
+          var motivoAlerta = 'Llegó un mensaje de tipo "' + (message.type || 'desconocido') +
+            '" que el sistema todavía no sabe procesar. message_id=' + (message.id || 'desconocido') +
+            (message.timestamp ? (', timestamp=' + message.timestamp) : '') +
+            '. Campos presentes en el mensaje: ' + camposPresentes +
+            '. Revísalo manualmente — no se guardó ni se respondió automáticamente.';
+          notificarLili(numeroResuelto || 'SIN_NUMERO_IDENTIFICABLE', motivoAlerta);
+
+          // 🆕 (5 ago 2026) — caso real "Lina De Brigard": resolverNumeroRemitente()
+          // no pudo extraer número de NINGUNA de las dos fuentes (message.from ni
+          // contacts[0].wa_id) para un mensaje que de otro modo sí se habría
+          // manejado. Se distingue de "tipo de mensaje no soportado" (arriba, donde
+          // sí puede haber numeroResuelto) porque la causa y el remedio son
+          // distintos: aquí el problema es la forma del payload, no un tipo de
+          // mensaje nuevo por soportar. Se persiste en lead_events (sin lead_id —
+          // nunca tuvimos con quién asociarlo) para que sobreviva más allá de los
+          // logs efímeros de Railway y se pueda inspeccionar la forma exacta del
+          // payload la próxima vez que esto ocurra.
+          if (!numeroResuelto) {
+            var payloadSanitizado = sanitizarPayloadWebhook({
+              messaging_product: value.messaging_product,
+              metadata: value.metadata,
+              contacts: value.contacts,
+              messages: value.messages
+            });
+            console.error('🔎 Payload crudo (número no resuelto, message_id=' + (message.id || 'desconocido') + '): ' + JSON.stringify(payloadSanitizado));
+            registrarEventoLead(null, 'MESSAGE_UNRESOLVABLE', {
+              actor: 'SYSTEM',
+              source: 'webhook',
+              whatsappMessageId: message.id || null,
+              metadata: { message_type: message.type || null, payload: payloadSanitizado }
+            });
+          }
         }
       }
     }
@@ -3401,7 +3833,15 @@ async function manejarCotizacionRepisa(from, texto, tag, systemConContexto, mens
     agregarMensaje(from, 'assistant', textoLimpioFinal); // único agregarMensaje de todo el flujo de cotización
 
     if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
-      seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
+      // Este flujo (manejarCotizacionRepisa) SOLO existe para cotizaciones de
+      // Repisa Flotante (ver resolverPrecioRepisa/tag.largoCm arriba) — el
+      // producto aquí nunca es ambiguo, no hace falta resolverProductoParaFotos.
+      // nivelIntencion queda null a propósito: esta función no recibe leadId
+      // (solo from/texto/tag), así que no tiene forma barata de consultar
+      // leads.buy_intent sin agregar un parámetro nuevo a los 3 call sites —
+      // se acepta la cadencia por defecto aquí (simplificación deliberada,
+      // caso poco frecuente: ya se le dio un precio real, no es un lead frío).
+      seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: 'Repisa Flotante', nivelIntencion: null };
       guardarSeguimiento(from);
     }
 
@@ -3476,12 +3916,23 @@ function procesarMensaje(from, texto, leadId, referralData) {
       })
     : Promise.resolve(null);
 
-  Promise.all([promesaFormulario, promesaProductoPersistido]).then(function(contextosLead) {
+  // 🆕 Etapa 2, punto 2 — intención de compra del formulario, guardada por
+  // manejarEventoLeadgen(). Solo importa para el primer saludo_sin_respuesta
+  // (ver más abajo, dónde se usa) — el resto del flujo la ignora.
+  var promesaIntencionCompra = leadId
+    ? obtenerIntencionCompraLead(leadId).catch(function(e) {
+        console.error('Error buscando intención de compra para lead ' + leadId + ':', e.message);
+        return null;
+      })
+    : Promise.resolve(null);
+
+  Promise.all([promesaFormulario, promesaProductoPersistido, promesaIntencionCompra]).then(function(contextosLead) {
   var formularioVinculado = contextosLead[0];
   var productoPersistido = contextosLead[1];
+  var intencionCompraPersistida = contextosLead[2];
   var bloqueFormulario = formularioVinculado ? formatearRespuestasFormulario(formularioVinculado) : null;
   var productoFormularioParaFotos = formularioVinculado
-    ? detectarProductoFormulario(formularioVinculado.field_data || [])
+    ? detectarProductoFormulario(formularioVinculado.field_data || [], formularioVinculado.form_name || null)
     : null;
   if (bloqueFormulario) {
     esPrimerMensaje = true; // asegura el envío de fotos también para leads de formulario
@@ -3518,6 +3969,26 @@ function procesarMensaje(from, texto, leadId, referralData) {
   if (bloqueReferral) {
     systemConContexto += '\n\n' + bloqueReferral +
       '\n\nEste lead llegó desde este anuncio y ya vio el mensaje de bienvenida de Meta antes de escribir — NO le preguntes genéricamente qué mueble le interesa. Reconoce que viene del anuncio, confirma características y precio de este producto siguiendo tus reglas (características antes que precio, siempre), y haz una pregunta de acción concreta para avanzar.';
+  }
+
+  // 🆕 Deduplicación determinística de formulario repetido (caso real
+  // Deissy) — ver detectarMensajeDuplicado() para el criterio exacto. Se
+  // excluyen los placeholders sintéticos de media ("[El cliente envió...]")
+  // porque dos fotos/audios DISTINTOS comparten el mismo texto genérico —
+  // compararlos produciría falsos positivos (marcar una foto nueva como
+  // reenvío de la anterior solo porque ambas dicen "[El cliente envió una
+  // imagen]"). NO se bloquea el mensaje — Claude lo sigue recibiendo, solo
+  // se le avisa para que no reinicie el saludo ni repita la misma pregunta.
+  var esPlaceholderMedia = typeof texto === 'string' && texto.indexOf('[El cliente envió ') === 0;
+  var esReenvioDuplicado = !esPlaceholderMedia && detectarMensajeDuplicado(conversaciones[from], texto);
+  if (esReenvioDuplicado) {
+    systemConContexto += '\n\nEste mensaje es idéntico a uno que el cliente ya envió antes en esta conversación (posible reenvío técnico del formulario). YA fue respondido. No reinicies el saludo ni repitas la misma pregunta. Continúa desde donde quedó el hilo, o si no hay nada nuevo que agregar, pregunta con naturalidad si sigue interesado.';
+    console.log('🔁 Mensaje duplicado detectado para ' + from + ' — nota inyectada al system prompt, no se bloquea');
+    registrarEventoLead(leadId || null, 'DUPLICATE_MESSAGE_DETECTED', {
+      actor: 'SYSTEM',
+      source: 'procesarMensaje',
+      metadata: { longitud_texto: texto.length }
+    });
   }
 
   // Si el último mensaje del lead es una imagen real (ya descargada y subida a
@@ -3655,7 +4126,8 @@ function procesarMensaje(from, texto, leadId, referralData) {
       console.log('Escalado. Numero pausado: ' + from);
     } else {
       if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
-        seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
+        var estadoSeguimiento = intencionCompraPersistida === 'más_adelante' ? 'reactivacion_futura' : 'saludo_sin_respuesta';
+        seguimientos[from] = { estado: estadoSeguimiento, timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotos, nivelIntencion: intencionCompraPersistida };
         guardarSeguimiento(from);
       }
     }
@@ -3710,7 +4182,19 @@ function procesarMensaje(from, texto, leadId, referralData) {
         } else {
           if (!seguimientos[from] || (seguimientos[from].estado !== 'cerrado_venta' && seguimientos[from].estado !== 'cerrado_perdido' && seguimientos[from].estado !== 'esperando_info' && seguimientos[from].estado !== 'esperando_decision' && seguimientos[from].estado !== 'cotizacion_enviada')) {
             if (from !== LILI_NUMERO) {
-              seguimientos[from] = { estado: 'saludo_sin_respuesta', timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now() };
+              // Mismo criterio de resolución de producto que el intento
+              // principal (resolverProductoParaFotos ya está en scope vía
+              // closure de procesarMensaje: productoPersistido,
+              // productoFormularioParaFotos, productoReferral).
+              var productoParaFotosReintento = resolverProductoParaFotos({
+                textoActual: texto,
+                respuestaClaude: respuesta,
+                historial: conversaciones[from],
+                productoContextoOrigen: productoFormularioParaFotos || productoReferral,
+                productoPersistido: productoPersistido
+              });
+              var estadoSeguimientoReintento = intencionCompraPersistida === 'más_adelante' ? 'reactivacion_futura' : 'saludo_sin_respuesta';
+              seguimientos[from] = { estado: estadoSeguimientoReintento, timestamp: Date.now(), intentos: 0, ultimoMensajeLead: Date.now(), producto: productoParaFotosReintento, nivelIntencion: intencionCompraPersistida };
               guardarSeguimiento(from);
             }
           }
@@ -3959,6 +4443,15 @@ async function obtenerProductoPersistidoLead(leadId) {
   return r.rows[0] && r.rows[0].product ? r.rows[0].product : null;
 }
 
+// 🆕 Etapa 2, punto 2 — intención de compra guardada por
+// manejarEventoLeadgen() (leads.buy_intent), leída aquí para propagarla al
+// primer seguimiento saludo_sin_respuesta que cree procesarMensaje().
+async function obtenerIntencionCompraLead(leadId) {
+  if (!leadId) return null;
+  var r = await pool.query('SELECT buy_intent FROM leads WHERE id = $1', [leadId]);
+  return r.rows[0] && r.rows[0].buy_intent ? r.rows[0].buy_intent : null;
+}
+
 function guardarProductoPersistidoLead(leadId, producto) {
   if (!leadId || !FOTOS_POR_PRODUCTO[producto]) return Promise.resolve(false);
   return pool.query(
@@ -4133,6 +4626,9 @@ function enviarMensaje(to, texto) {
 // cumple `require.main === module`.
 if (require.main === module) {
   inicializarBD().then(function() {
+    // 🆕 ETAPA 0: sin await a propósito — un fallo o demora en Graph API
+    // nunca debe retrasar ni bloquear app.listen() ni el resto del servidor.
+    obtenerPageAccessToken();
     app.listen(PORT, function() {
       console.log('Agente Lili V10 (PostgreSQL) en puerto ' + PORT);
       console.log('🔎 Verificación LILI_NUMERO: "' + LILI_NUMERO + '" (longitud: ' + (LILI_NUMERO ? LILI_NUMERO.length : 0) + ' caracteres) — compara esto con tu número real, sin +, sin espacios');
@@ -4155,9 +4651,23 @@ app.seguimientos = seguimientos;
 app.agregarMensaje = agregarMensaje;
 app.obtenerOCrearLead = obtenerOCrearLead;
 app.tipoDeMensajeEsManejado = tipoDeMensajeEsManejado;
+app.resolverNumeroRemitente = resolverNumeroRemitente;
+app.sanitizarPayloadWebhook = sanitizarPayloadWebhook;
+app.reclamarLockProcesando = reclamarLockProcesando;
+app.getMensajeSeguimiento = getMensajeSeguimiento;
+app.mensajeReactivacion = mensajeReactivacion;
+app.infoProductoSeguimiento = infoProductoSeguimiento;
+app.activarSeguimiento = activarSeguimiento;
+app.guardarSeguimiento = guardarSeguimiento;
+app.detectarMensajeDuplicado = detectarMensajeDuplicado;
+app.detectarIntencionCompraFormulario = detectarIntencionCompraFormulario;
+app.ventanaReactivacion = ventanaReactivacion;
+app.obtenerIntencionCompraLead = obtenerIntencionCompraLead;
+app.liberarLockSiLoReclamamos = liberarLockSiLoReclamamos;
 app.capturarMensajeCRM = capturarMensajeCRM;
 app.capturarReferral = capturarReferral;
 app.manejarEventoLeadgen = manejarEventoLeadgen;
+app.obtenerPageAccessToken = obtenerPageAccessToken;
 app.extraerTelefonoDeFieldData = extraerTelefonoDeFieldData;
 app.registrarEventoLead = registrarEventoLead;
 app.obtenerFormularioVinculadoReciente = obtenerFormularioVinculadoReciente;
@@ -4202,6 +4712,7 @@ app.__setPoolParaPruebas = function(poolSimulado) { pool = poolSimulado; };
 app.__setLlamarClaudeParaPruebas = function(fn) { llamarClaude = fn; };
 app.getSystemPrompt = getSystemPrompt;
 app.cotizadorRepisasV2Habilitado = cotizadorRepisasV2Habilitado;
+app.reactivacion1219Habilitada = reactivacion1219Habilitada;
 app.respuestaPrometeEnvioGratisSinAprobar = respuestaPrometeEnvioGratisSinAprobar;
 // Solo para pruebas: permite simular un producto con envío gratis aprobado
 // sin tocar la lista real (vacía en producción salvo que Lili apruebe un caso).
