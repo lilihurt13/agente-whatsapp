@@ -1,10 +1,27 @@
 # Pendientes — no urgentes, revisar en sesión futura
 
+## Cerrado (17 ago 2026) — revisión de resultados de la campaña de agosto
+
+**Campaña `HPL | Leads Formulario | Muebles | Agosto 2026` terminó el 15 de agosto: $167.734 COP,
+29 leads, $5.784 COP/lead, 0 ventas.** Detalle completo (tabla caso por caso de las fallas de
+lectura de Olivia, ya en su mayoría corregidas durante la propia campaña, y de por qué solo un
+producto tuvo entrega) en `docs/OLIVIA_DOCUMENTO_MAESTRO.md`, sección 6.7.
+
+**Queda pendiente decidir con Lili:**
+1. Presupuesto individual por producto (ABO) en la siguiente prueba — el presupuesto compartido
+   (CBO) de $15.000 COP/día concentró el 100% del gasto en un solo anuncio.
+2. Cuantificar cuántos de los 29 leads recibieron seguimiento completo (requiere consulta a la
+   base de datos de producción).
+3. Renovar `PAGE_ACCESS_TOKEN` antes del 2 de octubre de 2026.
+4. Si se extiende/relanza la campaña o se ajusta primero.
+
+---
+
 ## Cerrado (30 jul 2026) — el "formulario" nunca fue un Instant Form real, campaña nueva publicada
 
 **Resuelto, y desde entonces la campaña ya corrió completa y terminó el 15 de agosto** (ver
-`docs/OLIVIA_DOCUMENTO_MAESTRO.md` sección 6.3 para el detalle completo de causa raíz y fix, y
-la revisión de métricas finales del 17 de agosto más abajo/en el maestro).
+`docs/OLIVIA_DOCUMENTO_MAESTRO.md` sección 6.6 para el detalle completo de causa raíz y fix, y
+la sección 6.7 para la revisión de métricas finales del 17 de agosto).
 
 Resumen: nunca hubo un Instant Form de Meta (era un mensaje de bienvenida de WhatsApp con
 preguntas en texto), y además la página no estaba suscrita al webhook `leadgen`. Se crearon 3

@@ -1,6 +1,6 @@
 # DOCUMENTO MAESTRO — Proyecto Olivia (Hecho por Lili)
 
-**Última actualización:** 5 de agosto de 2026
+**Última actualización:** 17 de agosto de 2026
 **Propósito de este documento:** ser el punto de partida para CUALQUIER asistente de IA nuevo (Claude Code, ChatGPT Codex, o cualquier otro) que retome este proyecto. Si estás retomando el trabajo en una sesión nueva o con una herramienta distinta, pega este documento completo al inicio antes de pedir cualquier cambio. Súbelo también a `docs/OLIVIA_DOCUMENTO_MAESTRO.md` en el repositorio para que quede accesible desde GitHub, no solo en un chat de Claude.
 
 ---
@@ -306,6 +306,32 @@ Diagnóstico hecho el 30 jul cruzando Meta Ads Manager, Graph API Explorer, Meta
 
 **Resultado final — ver sección 6.7 (revisión del 17 de agosto, campaña ya cerrada).**
 
+### 6.7 Cierre de la campaña de agosto — resultados y diagnóstico (17 ago 2026)
+
+**Métricas finales (30 jul – 15 ago, vía Meta Ads):** $167.734 COP de gasto, 21.257 impresiones, 594 clics (CTR 2,79%), 29 leads del formulario, $5.784 COP por lead, **0 ventas**.
+
+**Hallazgo 1 — el presupuesto nunca se repartió entre los 3 productos.** Los 29 leads y el 100% del gasto salieron únicamente del anuncio "Mesa Auxiliar 45 x 45". Escritorio Flotante y Repisa tuvieron **cero impresiones, cero clics** en todo el período (`delivery.status: "completed"`, no fue un rechazo). Causa: presupuesto de campaña Advantage+ (CBO) de solo $15.000 COP/día compartido entre 3 anuncios — el algoritmo concentra el gasto en el que muestra mejor señal temprana casi de inmediato, sin dejar que los otros dos se prueben. **Para la próxima prueba: presupuesto individual por producto (ABO) y/o presupuesto diario más alto.**
+
+**Hallazgo 2 — las "fallas de lectura de Olivia" reportadas por Lili ya estaban diagnosticadas y en su mayoría corregidas durante la campaña** (ver sección 6.3, Etapas 0-2, para el detalle técnico completo de cada una). Resumen de los casos reales, todos dentro de la ventana de la campaña (30 jul – 15 ago):
+
+| Caso | Fecha | Qué falló | Estado |
+|---|---|---|---|
+| Causa raíz general | hasta 2 ago | `manejarEventoLeadgen()` usaba un token equivocado (User Token en vez de Page Access Token) para leer las respuestas del formulario | **Corregido** (Etapa 0, 3 ago) |
+| Yuly | antes del 3 ago | Webhook se perdía en silencio cuando `message.from` venía vacío | **Corregido** (Etapa 1, 3 ago) |
+| Fernando Escobar | 1 ago | 3 mensajes en ráfaga (~7s) — uno se perdía, otro disparaba saludo genérico por condición de carrera | **Mejorado** (lock síncrono, 3 ago) — un segundo mensaje en la misma ráfaga aún se guarda sin generar respuesta en esa pasada; el debounce completo sigue pendiente |
+| Deissy | antes del 3 ago | Reenvío del mismo formulario tratado como mensaje nuevo, repetía el saludo | **Corregido** (3 ago) |
+| Omaira Quintero | 3 ago | (verificación positiva) confirmó que la Graph API de Lead Ads ya funcionaba de punta a punta tras el fix de Etapa 0 | — |
+| Lina De Brigard | 5 ago | El formulario sí se vinculó bien, pero el mensaje de chat real que llegó 2 segundos después no se pudo asociar a ningún número (ni `message.from` ni `contacts[0].wa_id`) y se descartó en silencio | **Parcialmente corregido** — ahora queda registrado (`MESSAGE_UNRESOLVABLE`) y logueado en detalle, pero la causa de fondo (por qué faltó el número) sigue sin identificarse; pendiente la próxima vez que se repita |
+| Carolina Salazar | antes del 11 ago | El formulario de Mesa Auxiliar respondía con valores genéricos (`necesito_ayuda_para_elegir`, etc.) que no contenían la palabra "mesa" — Olivia no identificaba el producto y mandaba fotos de repisa | **Corregido** (11 ago, `form_name` como respaldo) — su fila específica en la base de datos quedó sin corregir retroactivamente |
+
+**Conclusión para Lili:** los 29 leads sí llegaron a existir y, salvo los casos puntuales de la tabla (ya en su mayoría corregidos durante la propia campaña), Olivia sí los procesó. El motivo más probable de "0 ventas" no es que Olivia perdiera los leads — es una combinación de (a) solo un producto (Mesa Auxiliar) tuvo entrega real, y (b) cuentas por revisar en la calidad/seguimiento de la conversación después del primer contacto (número exacto de leads con seguimiento completo vs. sin respuesta del cliente — no se pudo cuantificar en esta revisión sin acceso directo a la base de datos de producción).
+
+**Pendiente para decidir con Lili antes de la siguiente campaña:**
+1. Presupuesto individual por producto (ABO) en vez de CBO compartido.
+2. Confirmar cuántos de los 29 leads recibieron seguimiento completo y en qué punto se cayó la conversación (requiere consulta a `leads`/`messages`/`lead_events` en Railway).
+3. Renovar `PAGE_ACCESS_TOKEN` antes del 2 de octubre de 2026.
+4. Decidir si se extiende/relanza la campaña o se ajustan creativos/presupuesto primero.
+
 ---
 
 ## 7. PENDIENTES CONOCIDOS
@@ -316,9 +342,13 @@ Diagnóstico hecho el 30 jul cruzando Meta Ads Manager, Graph API Explorer, Meta
 - Descuento por volumen (cantidad>1) — no implementado
 - Interpolación entre medidas — descartada a favor de fórmula completa
 - Panel sin paginar (~164KB por carga) — riesgo de lentitud futura
-- ~~Revisar si Meta permite forzar "formulario primero"~~ — resuelto 30 jul con Instant Forms reales, ver 6.3
-- Prueba real de Instant Form → WhatsApp → Olivia desde un teléfono externo (ver 6.3)
-- Confirmar respaldo de Google Sheets para los formularios de Mesa Auxiliar y Repisa (ver 6.3)
+- ~~Revisar si Meta permite forzar "formulario primero"~~ — resuelto 30 jul con Instant Forms reales, ver 6.6
+- ~~Prueba real de Instant Form → WhatsApp → Olivia desde un teléfono externo~~ — superado en la práctica: la campaña ya trajo leads reales que confirman el flujo (ver 6.7)
+- Confirmar respaldo de Google Sheets para los formularios de Mesa Auxiliar y Repisa (ver 6.6) — sigue sin confirmar
+- Renovar `PAGE_ACCESS_TOKEN` antes del ~2 de octubre de 2026 (ver 6.3, Etapa 0) — si expira sin renovar, la lectura de leads vuelve a fallar en silencio
+- Presupuesto compartido (CBO) en la próxima campaña de leads concentró el 100% del gasto en un solo anuncio, dejando 2 de 3 productos sin ninguna entrega — ver 6.7, evaluar presupuesto individual por producto (ABO) para la siguiente prueba
+- Plantilla de WhatsApp genérica para seguimiento fuera de 24h en productos distintos a Repisa Flotante — sigue sin existir (ver 6.3, Etapa 1/2)
+- Cola/debounce de mensajes en ráfaga — mejora pendiente, hoy solo hay lock síncrono (ver 6.3, Etapa 1)
 
 ---
 
